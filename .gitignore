@@ -1,0 +1,13 @@
+.env
+backend/.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+node_modules/
+dist/
+backend/data/
+evidence/*
+!evidence/.gitkeep
+reports/*
+!reports/.gitkeep
