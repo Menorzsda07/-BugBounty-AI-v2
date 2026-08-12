@@ -35,20 +35,33 @@ def benign_path_canonicalization(finding):
         doubled.get("status") in (301, 302, 307, 308)
         and doubled.get("location") in acceptable_locations
     )
-    same_content = (
+    same_route_shape = (
         base.get("status") == dotted.get("status")
         and base.get("ctype") == dotted.get("ctype")
         and base.get("bytes") == dotted.get("bytes")
         and base.get("structure") == dotted.get("structure")
-        and base.get("normalized_sha256") == dotted.get("normalized_sha256")
     )
-    return bool(redirect_ok and same_content)
+    return bool(redirect_ok and same_route_shape)
+
+
+def demote_unvalidated_xss(finding):
+    if finding.get("module") != "xss_reflection":
+        return False
+    evidence = finding.get("evidence") or {}
+    if not evidence.get("marker_reflected"):
+        return False
+    if not evidence.get("special_char_execution_not_tested"):
+        return False
+    finding["confidence"] = "info"
+    finding["impact_evidence"] = False
+    finding["identified_scan_note"] = "alphanumeric_reflection_only_requires_context_validation"
+    return True
 
 
 def postprocess_output(out_path):
     data = json.load(open(out_path, encoding="utf-8"))
     findings = data.get("findings", []) or []
-    kept, suppressed = [], []
+    kept, suppressed, demoted = [], [], []
     for finding in findings:
         if benign_path_canonicalization(finding):
             suppressed.append({
@@ -57,14 +70,25 @@ def postprocess_output(out_path):
                 "title": finding.get("title"),
                 "reason": "benign_path_canonicalization",
             })
-        else:
-            kept.append(finding)
+            continue
+        if demote_unvalidated_xss(finding):
+            demoted.append({
+                "module": finding.get("module"),
+                "target": finding.get("target"),
+                "reason": "alphanumeric_reflection_without_special_character_validation",
+            })
+        kept.append(finding)
+
+    data["findings"] = kept
     if suppressed:
-        data["findings"] = kept
         data["suppressed_by_identified_scan"] = suppressed
+    if demoted:
+        data["demoted_by_identified_scan"] = demoted
+    if suppressed or demoted:
         stats = data.setdefault("stats", {})
         stats["findings"] = len(kept)
         stats["suppressed_benign_canonicalization"] = len(suppressed)
+        stats["demoted_unvalidated_xss"] = len(demoted)
         open(out_path, "w", encoding="utf-8").write(json.dumps(data, indent=2, ensure_ascii=False))
 
 
