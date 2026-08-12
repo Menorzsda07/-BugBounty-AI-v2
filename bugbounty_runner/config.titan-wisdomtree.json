@@ -1,4 +1,5 @@
 {
+  "titan_profile": "V PRO 1.0",
   "programs": [
     {
       "name": "wisdomtree",
@@ -14,16 +15,28 @@
         "wisdomtree.eu",
         "dataspanapi.wisdomtree.com"
       ],
-      "notes": "Only bounty/submission-eligible URL assets from the user-provided WisdomTree HackerOne CSV. wisdomtree.com, wisdomtree.eu and dataspanapi.wisdomtree.com excluded. Mobile apps omitted from this web/API campaign. Respect program rules: no data modification, no privilege escalation, no PII/auth/bank data collection, no service degradation, no access beyond minimum necessary proof."
+      "notes": "Only bounty/submission-eligible URL assets from the user-provided WisdomTree HackerOne CSV. Excluded hosts remain authoritative. Mobile apps omitted from this web/API campaign. No data modification, privilege escalation, PII/auth/bank data collection, service degradation, or access beyond minimum necessary proof."
     }
   ],
   "max_requests_per_target_per_runner": 24,
   "delay_ms": 1000,
   "runner_count": 12,
+  "evidence_policy": {
+    "store_response_bodies": false,
+    "store_secret_values": false,
+    "store_auth_material": false,
+    "store_pii_values": false
+  },
+  "scope_policy": {
+    "discovered_urls_must_be_allowlisted": true,
+    "follow_redirects": false,
+    "third_party_fetches": false
+  },
   "enabled_modules": [
     "surface",
     "headers",
     "well_known",
+    "cookie_security",
     "js_routes",
     "api_hints",
     "sourcemaps",
@@ -35,6 +48,7 @@
     "xss_reflection",
     "sqli_differential",
     "error_diff",
+    "error_disclosure",
     "openapi_graphql",
     "sensitive_files",
     "dns_http_inventory",
@@ -49,5 +63,5 @@
     "cache_variance"
   ],
   "aggressive_modules": [],
-  "notes": "TITAN WisdomTree-only 12-runner campaign. Exact user-provided HackerOne web/API scope only. Credential-required testing excluded. No DoS, data modification, privilege escalation, PII/auth/bank data collection, or disruptive behavior. Brain Code VSystem filters known false positives."
+  "notes": "TITAN V PRO WisdomTree-only 12-runner safe campaign. ScopeGuard, rate budget, semantic differential controls, evidence redaction, exact false-positive memory and per-action reporting enabled. Credential-required testing excluded."
 }
