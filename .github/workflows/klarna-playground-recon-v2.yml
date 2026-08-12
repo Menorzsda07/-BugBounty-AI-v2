@@ -1,4 +1,4 @@
-name: Klarna continuous scoped recon
+name: Klarna expanded scoped recon
 on:
   push:
   workflow_dispatch:
@@ -8,41 +8,64 @@ jobs:
   recon:
     runs-on: ubuntu-latest
     steps:
-      - name: Continuous low-impact mapping
+      - name: Expanded passive and low-impact mapping
         shell: bash
         run: |
           set -u
           mkdir -p out js
-          : > out/results.txt
-          BASE='https://portal.playground.klarna.com'
           UA='Mozilla/5.0 security-research-low-volume'
-          echo '[1/5] Fetch portal' | tee -a out/results.txt
-          curl -sS -L --max-redirs 3 --max-time 20 -A "$UA" "$BASE/" -o out/index.html || true
-          echo '[2/5] Extract public JS bundles' | tee -a out/results.txt
-          grep -Eo 'src=["'"'][^"'"']+\.js[^"'"']*["'"']' out/index.html | sed -E 's/^src=["'"']|["'"']$//g' | head -40 > out/js_paths.txt || true
-          while IFS= read -r p; do
-            [ -z "$p" ] && continue
-            case "$p" in http*) u="$p";; *) u="$BASE/${p#/}";; esac
-            f="js/$(echo "$u" | sha256sum | cut -c1-16).js"
-            echo "GET $u" | tee -a out/results.txt
-            curl -sS -L --max-redirs 2 --max-time 20 -A "$UA" "$u" -o "$f" || true
-            sleep 1
-          done < out/js_paths.txt
-          echo '[3/5] Extract scoped Klarna hosts and candidate routes' | tee -a out/results.txt
-          grep -rhoE 'https://[A-Za-z0-9._-]+\.(klarna\.com|klarna\.net|klarnacdn\.net)(/[A-Za-z0-9_./?=&%:-]*)?' js out/index.html 2>/dev/null | sort -u | head -500 > out/urls.txt || true
-          grep -rhoE '/[A-Za-z0-9_.-]*(account|merchant|credential|payment|order|settlement|auth|session|organization|dispute|user)[A-Za-z0-9_./?=&%:-]*' js 2>/dev/null | sort -u | head -500 > out/routes.txt || true
-          cat out/urls.txt out/routes.txt >> out/results.txt
-          echo '[4/5] Low-volume unauthenticated GET checks' | tee -a out/results.txt
-          grep -E '^https://[^/]*\.klarna\.com/' out/urls.txt | head -30 | while read -r u; do
-            code=$(curl -sS -o /tmp/body -w '%{http_code}' --max-time 12 -A "$UA" "$u" || true)
-            size=$(wc -c </tmp/body 2>/dev/null || echo 0)
-            ctype=$(curl -sSI --max-time 8 -A "$UA" "$u" 2>/dev/null | awk -F': ' 'tolower($1)=="content-type"{print $2}' | tr -d '\r' | head -1)
-            echo "$code $size [$ctype] $u" | tee -a out/results.txt
+          BASE='https://portal.playground.klarna.com'
+          : > out/results.txt
+          echo '[1/7] Baseline scoped assets' | tee -a out/results.txt
+          for u in 'https://portal.playground.klarna.com/' 'https://app.klarna.com/'; do
+            curl -sS -L --max-redirs 3 --max-time 20 -A "$UA" -D /tmp/h "$u" -o /tmp/b || true
+            echo "$(head -1 /tmp/h | tr -d '\r') bytes=$(wc -c </tmp/b) $u" | tee -a out/results.txt
+          done
+          echo '[2/7] Portal HTML and JS bundles' | tee -a out/results.txt
+          curl -sS -L --max-time 20 -A "$UA" "$BASE/" -o out/index.html || true
+          python3 - <<'PY'
+          import re,urllib.parse
+          s=open('out/index.html',errors='ignore').read()
+          vals=set(re.findall(r'''(?:src|href)=["']([^"']+\.js(?:\?[^"']*)?)["']''',s,re.I))
+          with open('out/js_urls.txt','w') as f:
+            for x in sorted(vals): f.write(urllib.parse.urljoin('https://portal.playground.klarna.com/',x)+'\n')
+          PY
+          head -60 out/js_urls.txt | while read -r u; do
+            [ -z "$u" ] && continue
+            f="js/$(echo "$u"|sha256sum|cut -c1-20).js"
+            echo "bundle $u" | tee -a out/results.txt
+            curl -sS -L --max-time 25 -A "$UA" "$u" -o "$f" || true
             sleep 1
           done
-          echo '[5/5] Complete' | tee -a out/results.txt
+          echo '[3/7] Parse minified JavaScript' | tee -a out/results.txt
+          python3 - <<'PY'
+          import glob,re,json
+          text='\n'.join(open(p,errors='ignore').read() for p in glob.glob('js/*.js'))
+          hosts=sorted(set(re.findall(r'https?://[A-Za-z0-9._-]+\.(?:klarna\.com|klarna\.net|klarnacdn\.net|pricerunner\.com)(?:[^"\'<>\\ ]*)?',text)))
+          strings=re.findall(r'["\']([^"\']{2,240})["\']',text)
+          keys=('api','account','merchant','credential','payment','order','settlement','auth','session','organization','dispute','user','invoice','refund','checkout','login','token')
+          routes=sorted(set(x for x in strings if x.startswith('/') and any(k in x.lower() for k in keys) and len(x)<240))
+          open('out/urls.txt','w').write('\n'.join(hosts))
+          open('out/routes.txt','w').write('\n'.join(routes))
+          print('hosts',len(hosts),'routes',len(routes))
+          PY
+          cat out/urls.txt out/routes.txt >> out/results.txt
+          echo '[4/7] Source-map references only' | tee -a out/results.txt
+          grep -rhoE 'sourceMappingURL=[^[:space:]]+' js 2>/dev/null | sort -u | head -100 | tee out/sourcemaps.txt >> out/results.txt || true
+          echo '[5/7] Public configuration/secrets pattern review' | tee -a out/results.txt
+          grep -rhoEi '(api[_-]?key|client[_-]?id|issuer|oauth|openid|graphql|base[_-]?url)["'"']?[[:space:]]*[:=][[:space:]]*["'"'][^"'"']{3,180}' js 2>/dev/null | head -200 > out/config_candidates.txt || true
+          cat out/config_candidates.txt >> out/results.txt
+          echo '[6/7] Low-volume unauthenticated checks for explicit scoped URLs found in bundles' | tee -a out/results.txt
+          grep -E '^https://[^/]+\.(klarna\.com|klarna\.net|pricerunner\.com)/' out/urls.txt | head -40 | while read -r u; do
+            code=$(curl -sS -o /tmp/body -w '%{http_code}' --max-time 12 -A "$UA" "$u" || true)
+            size=$(wc -c </tmp/body 2>/dev/null || echo 0)
+            echo "$code $size $u" | tee -a out/results.txt
+            sleep 1
+          done
+          echo '[7/7] Summary' | tee -a out/results.txt
+          echo "bundles=$(find js -type f | wc -l) urls=$(wc -l <out/urls.txt) routes=$(wc -l <out/routes.txt) config_candidates=$(wc -l <out/config_candidates.txt)" | tee -a out/results.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: klarna-continuous-results
+          name: klarna-expanded-results
           path: out/
           retention-days: 1
