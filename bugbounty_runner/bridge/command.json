@@ -1,8 +1,8 @@
 {
   "bridge_name": "HUNTER8",
-  "command_id": "bootstrap-001",
+  "command_id": "titan-klarna-polygon-20260812-1749",
   "action": "scan",
-  "config_path": "bugbounty_runner/config.example.json",
+  "config_path": "bugbounty_runner/config.titan-active.json",
   "requested_by": "chatgpt",
-  "notes": "ChatGPT updates this reviewed command file after the user supplies an authorized HackerOne scope. A change to command_id triggers the 8-runner workflow."
+  "notes": "Triggered from /disparar workflow titan. Active scope: Klarna and Polygon only; credential-required flows excluded."
 }
