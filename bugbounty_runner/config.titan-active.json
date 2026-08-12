@@ -1,0 +1,46 @@
+{
+  "programs": [
+    {
+      "name": "klarna",
+      "targets": [
+        "https://portal.playground.klarna.com",
+        "https://app.klarna.com",
+        "https://auth.playground.eu.portal.klarna.com",
+        "https://auth.playground.oc.portal.klarna.com",
+        "https://auth.playground.us.portal.klarna.com"
+      ],
+      "exclude_paths": [],
+      "notes": "Targets are explicitly eligible or concrete hosts under user-provided eligible Klarna wildcards. No credential-required flows are included."
+    },
+    {
+      "name": "polygon",
+      "targets": [
+        "https://staking-api.polygon.technology",
+        "https://faucet.polygon.technology",
+        "https://portal.polygon.technology",
+        "https://staking.polygon.technology",
+        "https://faucet-api.polygon.technology/",
+        "https://api-gateway.polygon.technology",
+        "https://gasstation.polygon.technology/",
+        "https://api-polygon-tokens.polygon.technology/"
+      ],
+      "exclude_paths": [],
+      "notes": "Eight bounty-eligible assets taken from the user-provided Polygon HackerOne scope CSV. No credential-required flows. Respect Polygon no-DoS and other program exclusions."
+    }
+  ],
+  "max_requests_per_target_per_runner": 24,
+  "delay_ms": 1000,
+  "runner_count": 8,
+  "enabled_modules": [
+    "surface",
+    "js_routes",
+    "auth_boundary",
+    "cors",
+    "redirects",
+    "cache",
+    "xss_reflection",
+    "sqli_differential"
+  ],
+  "aggressive_modules": [],
+  "notes": "Active TITAN scope. Only explicitly authorized HackerOne assets. Credential-required testing excluded. No DoS or disruptive behavior."
+}
