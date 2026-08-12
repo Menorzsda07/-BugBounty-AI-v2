@@ -1,0 +1,9 @@
+{
+  "bridge_name": "HUNTER8",
+  "command_id": "titan-vpro-recovery-template",
+  "action": "scan_runner",
+  "config_path": "bugbounty_runner/config.example.json",
+  "runner": 0,
+  "requested_by": "template",
+  "notes": "TITAN V PRO isolated runner recovery. Use only with an already reviewed, scope-safe config."
+}
