@@ -1,67 +1,55 @@
-import json, re, requests, urllib.parse, hashlib, sys, os, time
-UA='BugBounty-AI-TITAN/1.0 validation-low-impact'
+import json, re, requests, urllib.parse, hashlib, os, time
+UA='BugBounty-AI-TITAN/1.1 validation-low-impact'
 TIMEOUT=12
 
-def get(url, **kwargs):
-    h=kwargs.pop('headers',{})
-    h.setdefault('User-Agent',UA)
-    return requests.get(url,headers=h,timeout=TIMEOUT,allow_redirects=False,**kwargs)
+def get(url):
+    return requests.get(url,headers={'User-Agent':UA},timeout=TIMEOUT,allow_redirects=False)
 
 def summarize(r):
-    ctype=r.headers.get('content-type','')
-    text=r.text[:4000]
-    return {'status':r.status_code,'bytes':len(r.content),'content_type':ctype,'location':r.headers.get('location',''),'hash':hashlib.sha256(r.content).hexdigest()[:16],'prefix':text[:500]}
+    return {'status':r.status_code,'bytes':len(r.content),'content_type':r.headers.get('content-type',''),'hash':hashlib.sha256(r.content).hexdigest()[:16]}
 
-out={'auth_boundary':[],'xss_reflection':[]}
-base='https://api-polygon-tokens.polygon.technology'
-paths=['/account','/admin','/api/account','/api/me','/api/user','/settings']
-controls=['/','/__titan_nonexistent_8f3c1a']
-control_data={}
-for p in controls:
-    try:
-        r=get(base+p); control_data[p]=summarize(r)
-    except Exception as e:
-        control_data[p]={'error':str(e)}
-    time.sleep(.8)
-
-sensitive_terms=re.compile(r'("?(email|user(_?id)?|account(_?id)?|merchant(_?id)?|token|secret|wallet|role|permissions?)"?\s*[:=])',re.I)
-for p in paths:
-    rec={'url':base+p}
-    try:
-        r=get(base+p); s=summarize(r); rec['response']=s
-        body=r.text[:10000]
-        rec['sensitive_markers']=sorted(set(m.group(2).lower() for m in sensitive_terms.finditer(body)))[:20]
-        rec['same_as_root_hash']=s.get('hash')==control_data.get('/',{}).get('hash')
-        rec['same_as_404_hash']=s.get('hash')==control_data.get('/__titan_nonexistent_8f3c1a',{}).get('hash')
-        ctype=s.get('content_type','').lower()
-        rec['looks_structured']=('json' in ctype) or body.lstrip().startswith(('{','['))
-        rec['candidate_survives']=bool(r.status_code==200 and rec['looks_structured'] and rec['sensitive_markers'] and not rec['same_as_404_hash'])
-    except Exception as e:
-        rec['error']=str(e); rec['candidate_survives']=False
-    out['auth_boundary'].append(rec)
-    time.sleep(.8)
-
-# Reflection validation: harmless unique markers only, no script execution payloads.
+out={'xss_context_validation':[]}
 faucet='https://faucet.polygon.technology/'
-markers=['titan_reflect_A7f91','titan_lt_%3C_A7f91','titan_quote_%22_A7f91']
-for raw in markers:
-    marker=urllib.parse.unquote(raw)
-    u=faucet+'?q='+raw
-    rec={'url':u,'marker':marker}
+# Non-executing probes only: determine whether HTML metacharacters survive and where reflection lands.
+probes=[
+ ('plain','TITANCTX_A91'),
+ ('angle','TITANCTX_A91<probe>'),
+ ('double_quote','TITANCTX_A91"probe'),
+ ('single_quote',"TITANCTX_A91'probe"),
+ ('amp','TITANCTX_A91&probe')
+]
+for kind, marker in probes:
+    u=faucet+'?q='+urllib.parse.quote(marker,safe='')
+    rec={'kind':kind,'url':u,'marker':marker}
     try:
         r=get(u); body=r.text
-        rec['status']=r.status_code; rec['bytes']=len(r.content)
-        idx=body.find(marker)
-        rec['reflected']=idx!=-1
-        rec['context']=body[max(0,idx-180):idx+len(marker)+180] if idx!=-1 else ''
-        rec['html_escaped_lt']=('&lt;' in rec['context']) if '<' in marker else None
-        rec['html_escaped_quote']=('&quot;' in rec['context'] or '&#34;' in rec['context']) if '"' in marker else None
+        rec.update(summarize(r))
+        needle='TITANCTX_A91'
+        idx=body.find(needle)
+        rec['base_reflected']=idx!=-1
+        ctx=body[max(0,idx-250):idx+500] if idx!=-1 else ''
+        rec['context']=ctx
+        rec['raw_marker_present']=marker in body
+        rec['escaped_angle']=('&lt;probe&gt;' in body or '\\u003cprobe\\u003e' in body.lower()) if kind=='angle' else None
+        rec['escaped_double_quote']=('&quot;probe' in body or '&#34;probe' in body or '\\u0022probe' in body.lower()) if kind=='double_quote' else None
+        rec['escaped_single_quote']=('&#39;probe' in body or '&#x27;probe' in body.lower() or '\\u0027probe' in body.lower()) if kind=='single_quote' else None
+        low=ctx.lower()
+        rec['context_hint']='html_text'
+        if '<script' in low: rec['context_hint']='script_block'
+        elif re.search(r'\w+\s*=\s*["\'][^"\']*titanctx_a91',low): rec['context_hint']='html_attribute'
+        elif 'application/json' in low or '__next_data__' in low: rec['context_hint']='serialized_data'
     except Exception as e:
         rec['error']=str(e)
-    out['xss_reflection'].append(rec)
+    out['xss_context_validation'].append(rec)
     time.sleep(.8)
 
+# Classification deliberately requires raw metacharacter survival in a potentially executable context.
+risky=[]
+for x in out['xss_context_validation']:
+    if x.get('raw_marker_present') and x.get('context_hint') in ('script_block','html_attribute') and x['kind'] in ('angle','double_quote','single_quote'):
+        risky.append(x['kind'])
+classification='needs_manual_browser_validation' if risky else 'reflection_only_not_confirmed_xss'
+result={'classification':classification,'risky_probes':risky,'results':out}
 os.makedirs('validation-results',exist_ok=True)
-with open('validation-results/polygon-validation.json','w',encoding='utf-8') as f:
-    json.dump({'controls':control_data,'results':out},f,indent=2,ensure_ascii=False)
-print(json.dumps({'auth_survivors':[x['url'] for x in out['auth_boundary'] if x.get('candidate_survives')], 'xss_reflections':[x['url'] for x in out['xss_reflection'] if x.get('reflected')]},ensure_ascii=False))
+with open('validation-results/polygon-xss-context.json','w',encoding='utf-8') as f: json.dump(result,f,indent=2,ensure_ascii=False)
+print(json.dumps({'classification':classification,'risky_probes':risky},ensure_ascii=False))
