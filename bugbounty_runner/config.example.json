@@ -1,38 +1,61 @@
 {
+  "titan_profile": "V PRO 1.0 template",
+  "template_only": true,
   "programs": [
     {
-      "name": "klarna",
+      "name": "replace-with-reviewed-program",
       "targets": [
-        "https://portal.playground.klarna.com",
-        "https://app.klarna.com"
+        "https://target.example.invalid/"
       ],
       "exclude_paths": [],
-      "notes": "Only explicitly eligible HackerOne assets."
-    },
-    {
-      "name": "freshworks-example",
-      "targets": [
-        "https://your-owned-tenant.freshdesk.com"
-      ],
-      "exclude_paths": [
-        "/crm/"
-      ],
-      "notes": "Use only a tenant owned by the researcher."
+      "excluded_hosts": [],
+      "notes": "INERT TEMPLATE. Replace with explicitly authorized, bounty-eligible assets before use. Never treat discovered hosts as automatically in scope."
     }
   ],
-  "max_requests_per_target_per_runner": 30,
-  "delay_ms": 900,
-  "runner_count": 8,
+  "max_requests_per_target_per_runner": 20,
+  "delay_ms": 1000,
+  "runner_count": 12,
+  "evidence_policy": {
+    "store_response_bodies": false,
+    "store_secret_values": false,
+    "store_auth_material": false,
+    "store_pii_values": false
+  },
+  "scope_policy": {
+    "discovered_urls_must_be_allowlisted": true,
+    "follow_redirects": false,
+    "third_party_fetches": false
+  },
   "enabled_modules": [
     "surface",
+    "headers",
+    "well_known",
+    "cookie_security",
     "js_routes",
+    "api_hints",
+    "sourcemaps",
     "auth_boundary",
+    "method_diff",
     "cors",
-    "redirects",
     "cache",
+    "redirects",
     "xss_reflection",
-    "sqli_differential"
+    "sqli_differential",
+    "error_diff",
+    "error_disclosure",
+    "openapi_graphql",
+    "sensitive_files",
+    "dns_http_inventory",
+    "fingerprints",
+    "status_anomaly",
+    "content_type_diff",
+    "path_normalization_diff",
+    "encoding_diff",
+    "header_behavior_diff",
+    "method_consistency",
+    "response_shape_diff",
+    "cache_variance"
   ],
   "aggressive_modules": [],
-  "notes": "Every target must be explicitly authorized and bounty-eligible. Aggressive modules stay disabled unless that program explicitly permits them."
+  "notes": "TITAN V PRO inert template. Use a dedicated reviewed program config for live campaigns."
 }
