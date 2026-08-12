@@ -1,0 +1,8 @@
+{
+  "bridge_name": "HUNTER8",
+  "command_id": "titan-vpro-wolt-phase2-20260812-2017",
+  "action": "scan",
+  "config_path": "bugbounty_runner/config.titan-wolt-phase2.json",
+  "requested_by": "chatgpt",
+  "notes": "Run Wolt HackerOne Phase 2 only against ops.wolt.com, merchant.wolt.com, drive.wolt.com, and corporate.wolt.com. Every request must include X-HackerOne-Research: ghosther. Low-volume unauthenticated checks only. No brute force, DoS, account/data access, mass entity creation, or interactions with employees, merchants, couriers, corporate customers, venues or third-party data."
+}
