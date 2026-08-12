@@ -1,10 +1,10 @@
 {
-  "validation_id": "wisdomtree-encoding-diff-20260812-rigorous-v1",
+  "validation_id": "wisdomtree-encoding-diff-20260812-rigorous-v2",
   "target": "https://app.wisdomtreeconnect.com/api/",
   "candidate": "encoding_diff",
-  "rounds": 4,
+  "rounds": 3,
   "delay_ms": 1000,
-  "max_requests": 16,
+  "max_requests": 12,
   "scope_source": "user-provided WisdomTree HackerOne scope already stored in TITAN config",
-  "notes": "Low-impact validation only. Compare q=A, q=%41, no-query baseline, and q=B negative control. No authentication, state-changing methods, data modification, privilege escalation, PII/auth/bank data collection, service degradation, or access beyond minimum proof."
+  "notes": "Efficient low-impact validation. Compare q=A, q=%41, no-query baseline, and q=B negative control using repeated structural and normalized-hash checks. No authentication, state-changing methods, data modification, privilege escalation, PII/auth/bank data collection, service degradation, or access beyond minimum proof."
 }
