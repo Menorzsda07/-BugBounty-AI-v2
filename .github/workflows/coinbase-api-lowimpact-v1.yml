@@ -1,0 +1,49 @@
+name: coinbase-api-lowimpact-v1
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Low-impact unauthenticated API checks
+        shell: bash
+        run: |
+          set -u
+          python3 - <<'PY'
+          import urllib.request, urllib.error, json, time
+          base='https://api.coinbase.com'
+          # Documented endpoints only; one request per variant, no credentials, no writes.
+          tests=[
+            ('GET','/api/v3/brokerage/accounts'),
+            ('HEAD','/api/v3/brokerage/accounts'),
+            ('OPTIONS','/api/v3/brokerage/accounts'),
+            ('GET','/api/v3/brokerage/key_permissions'),
+            ('GET','/api/v3/brokerage/payment_methods'),
+            ('GET','/v2/accounts'),
+            ('HEAD','/v2/accounts'),
+            ('OPTIONS','/v2/accounts'),
+            ('GET','/api/v3/brokerage/time'),
+            ('GET','/api/v3/brokerage/market/products'),
+          ]
+          out=[]
+          for method,path in tests:
+            req=urllib.request.Request(base+path, method=method, headers={
+              'Accept':'application/json',
+              'User-Agent':'authorized-security-research-low-volume/1.0',
+              'Origin':'https://example.invalid'
+            })
+            try:
+              with urllib.request.urlopen(req, timeout=12) as r:
+                body=r.read(1024).decode('utf-8','replace')
+                out.append({'method':method,'path':path,'status':r.status,'location':r.headers.get('location'),'acao':r.headers.get('access-control-allow-origin'),'allow':r.headers.get('allow'),'body':body[:300]})
+            except urllib.error.HTTPError as e:
+              body=e.read(1024).decode('utf-8','replace')
+              out.append({'method':method,'path':path,'status':e.code,'location':e.headers.get('location'),'acao':e.headers.get('access-control-allow-origin'),'allow':e.headers.get('allow'),'body':body[:300]})
+            except Exception as e:
+              out.append({'method':method,'path':path,'error':type(e).__name__+': '+str(e)})
+            time.sleep(1.0)
+          print(json.dumps(out,indent=2))
+          PY
