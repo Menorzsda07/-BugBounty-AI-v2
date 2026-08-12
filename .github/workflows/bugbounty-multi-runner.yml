@@ -1,4 +1,4 @@
-name: BugBounty AI Multi-Program 8-Runner Scanner
+name: BugBounty AI Multi-Program 12-Runner Scanner
 on:
   workflow_dispatch:
     inputs:
@@ -44,15 +44,14 @@ jobs:
           test -f "$CONFIG"
           echo "config_path=$CONFIG" >> "$GITHUB_OUTPUT"
           echo "command_id=$COMMAND_ID" >> "$GITHUB_OUTPUT"
-          echo "HUNTER8 command=$COMMAND_ID config=$CONFIG"
 
   scan:
     needs: prepare
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 12
       matrix:
-        runner: [0,1,2,3,4,5,6,7]
+        runner: [0,1,2,3,4,5,6,7,8,9,10,11]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,15 +60,11 @@ jobs:
           python-version: '3.12'
       - name: Install runtime
         run: pip install requests
-      - name: Run scanner pack on all reviewed programs and domains
+      - name: Run scoped scanner pack
         run: |
           mkdir -p results
-          echo "HUNTER8 ${{ needs.prepare.outputs.command_id }} runner=${{ matrix.runner }} starting"
-          python bugbounty_runner/multi_scan.py \
-            --config '${{ needs.prepare.outputs.config_path }}' \
-            --runner '${{ matrix.runner }}' \
-            --out 'results/runner-${{ matrix.runner }}.json'
-          echo "HUNTER8 runner=${{ matrix.runner }} complete"
+          echo "TITAN ${{ needs.prepare.outputs.command_id }} runner=${{ matrix.runner }} starting"
+          python bugbounty_runner/multi_scan.py --config '${{ needs.prepare.outputs.config_path }}' --runner '${{ matrix.runner }}' --out 'results/runner-${{ matrix.runner }}.json'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -88,10 +83,8 @@ jobs:
           pattern: multi-result-*
           path: results
           merge-multiple: true
-      - name: Aggregate, deduplicate and rank candidates
-        run: |
-          echo "HUNTER8 ${{ needs.prepare.outputs.command_id }} analyzing"
-          python bugbounty_runner/analyze.py | tee results/summary.txt
+      - name: Brain Code VSystem aggregate and rank
+        run: python bugbounty_runner/analyze.py | tee results/summary.txt
       - uses: actions/upload-artifact@v4
         with:
           name: multi-program-combined-analysis
