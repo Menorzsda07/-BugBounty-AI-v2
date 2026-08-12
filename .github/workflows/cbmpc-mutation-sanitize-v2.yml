@@ -1,0 +1,111 @@
+name: CBMPC Mutation Sanitizer V2
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-mutation-sanitize-v2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  mutate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Clone exact cb-mpc revision
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout 2369813b8b0507ce20febd1d81ef1708cdbb42d7 >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+
+      - name: Remove test-infrastructure ASAN false positive in runner copy only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          s = p.read_text()
+          old = '    delete queue.front();'
+          new = '    test_message_buffer_t::free(queue.front());'
+          if s.count(old) != 1:
+              raise SystemExit('expected exactly one test-only allocator mismatch site')
+          p.write_text(s.replace(old, new))
+          PY
+
+      - name: Reuse private mutation harness from previous temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL 'https://raw.githubusercontent.com/Menorzsda07/-BugBounty-AI-v2/main/.github/workflows/cbmpc-mutation-sanitize.yml' -o /tmp/previous-workflow.yml
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+          text = Path('/tmp/previous-workflow.yml').read_text()
+          marker = "cat >> cb-mpc/tests/unit/api/test_ecdsa_mp.cpp <<'CPP'\n"
+          start = text.index(marker) + len(marker)
+          end = text.index('\n          CPP', start)
+          block = textwrap.dedent(text[start:end])
+          with Path('cb-mpc/tests/unit/api/test_ecdsa_mp.cpp').open('a') as f:
+              f.write('\n' + block + '\n')
+          PY
+
+      - name: Build and run ASAN+UBSAN mutation campaign privately
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 40m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc \
+            'make sanitize filter=ApiEcdsaMp.MutationCampaignSanitized' \
+            >/tmp/sanitize.log 2>&1
+          status=$?
+          set -e
+          printf 'exit_status=%s\n' "$status" >/tmp/status.txt
+          if [ -f mutation-results.txt ]; then
+            cp mutation-results.txt /tmp/mutation-results.txt
+          else
+            echo 'no mutation result file' >/tmp/mutation-results.txt
+          fi
+          echo 'sanitizer run finished; detailed output will be encrypted'
+
+      - name: Encrypt private results
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >/tmp/cbmpc-public.pem <<'PEM'
+          -----BEGIN PUBLIC KEY-----
+          MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAioiYQLpxPmmImogC4zs1
+          lbU9Pp/TWVwaV2zyRryWM6e0ogZc/gNsnLftm+oMELOIkAATQGKVzlw6RZPGZco+
+          UXBmImYMVzzDPN7ebAcZcZJSsrZX4qmqtkZVZ/uSi0hVgyC68MNGUXUeWZhTadyF
+          FZY2Dtd28EdSCSZF3Yb/ay0FJXWGjka9LORgolaFD0NB1wHUlYzqx/SuhILgloH8
+          uD2cmwUs47y/LV6tOgpN1n1WHlMoBp1Ci1+fpQE1650Lr9+zJtTexoNJXxYJ0Cz4
+          k+A0vWSRLU0cD8mqNCepNmOeiQicCt6WZbgJMGOAOUcVV247TFYRWiZF2n92JLF+
+          QwIDAQAB
+          -----END PUBLIC KEY-----
+          PEM
+          mkdir -p /tmp/private-results
+          cp /tmp/status.txt /tmp/private-results/status.txt 2>/dev/null || true
+          cp /tmp/mutation-results.txt /tmp/private-results/mutation-results.txt 2>/dev/null || true
+          cp /tmp/sanitize.log /tmp/private-results/sanitize.log 2>/dev/null || true
+          cp /tmp/image-build.log /tmp/private-results/image-build.log 2>/dev/null || true
+          tar -C /tmp/private-results -czf /tmp/private-results.tar.gz .
+          openssl rand -hex 32 >/tmp/aes-pass.txt
+          openssl enc -aes-256-cbc -pbkdf2 -salt -in /tmp/private-results.tar.gz -out /tmp/private-results.tar.gz.enc -pass file:/tmp/aes-pass.txt
+          openssl pkeyutl -encrypt -pubin -inkey /tmp/cbmpc-public.pem -pkeyopt rsa_padding_mode:oaep -in /tmp/aes-pass.txt -out /tmp/aes-pass.txt.enc
+          rm -rf /tmp/private-results /tmp/private-results.tar.gz /tmp/aes-pass.txt /tmp/sanitize.log /tmp/image-build.log /tmp/status.txt /tmp/mutation-results.txt
+
+      - name: Upload encrypted results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cbmpc-mutation-private-v2
+          path: |
+            /tmp/private-results.tar.gz.enc
+            /tmp/aes-pass.txt.enc
+          retention-days: 1
