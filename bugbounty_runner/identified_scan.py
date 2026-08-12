@@ -103,8 +103,8 @@ def main():
     original = multi_scan.requests.request
 
     def identified_request(method, url, headers=None, **kwargs):
-        merged = dict(required_headers)
-        merged.update(dict(headers or {}))
+        merged = dict(headers or {})
+        merged.update(required_headers)
         return original(method, url, headers=merged, **kwargs)
 
     multi_scan.requests.request = identified_request
