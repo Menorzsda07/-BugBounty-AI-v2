@@ -26,6 +26,17 @@
       ],
       "exclude_paths": [],
       "notes": "Eight bounty-eligible assets taken from the user-provided Polygon HackerOne scope CSV. No credential-required flows. Respect Polygon no-DoS and other program exclusions."
+    },
+    {
+      "name": "wisdomtree",
+      "targets": [
+        "https://api.wisdomtreeprimeapp.com",
+        "https://app.wisdomtreeconnect.com/api/",
+        "https://app.wisdomtreeconnect.com/o/token/",
+        "https://app.wisdomtreeconnect.com"
+      ],
+      "exclude_paths": [],
+      "notes": "Only bounty/submission-eligible URL assets from the user-provided WisdomTree HackerOne CSV. wisdomtree.com, wisdomtree.eu and dataspanapi.wisdomtree.com excluded. Mobile apps omitted from this web/API campaign. Respect program rules: no data modification, no privilege escalation, no PII/auth/bank data collection, no service degradation, no access beyond minimum necessary proof."
     }
   ],
   "max_requests_per_target_per_runner": 24,
