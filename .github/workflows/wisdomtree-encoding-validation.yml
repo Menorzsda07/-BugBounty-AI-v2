@@ -24,204 +24,126 @@ jobs:
         run: |
           mkdir -p validation
           python - <<'PY'
-          import json, re, time, hashlib, statistics, difflib, itertools, urllib.parse
+          import json,re,time,hashlib,statistics,os
           from html import unescape
           import requests
 
           CMD='bugbounty_runner/bridge/wisdomtree-validation-command.json'
-          if __import__('os').path.exists(CMD):
-              cmd=json.load(open(CMD, encoding='utf-8'))
-          else:
-              cmd={
-                  'target':'https://app.wisdomtreeconnect.com/api/',
-                  'rounds':4,
-                  'delay_ms':1000,
-                  'max_requests':16,
-              }
+          cmd=json.load(open(CMD,encoding='utf-8')) if os.path.exists(CMD) else {}
+          TARGET=cmd.get('target','https://app.wisdomtreeconnect.com/api/')
+          ROUNDS=int(cmd.get('rounds',3)); DELAY=max(750,int(cmd.get('delay_ms',1000)))/1000
+          MAX_REQUESTS=int(cmd.get('max_requests',12))
+          assert TARGET == 'https://app.wisdomtreeconnect.com/api/', f'out-of-scope target blocked: {TARGET}'
+          assert 2 <= ROUNDS <= 5 and MAX_REQUESTS <= 20
 
-          TARGET=cmd.get('target')
-          ROUNDS=int(cmd.get('rounds',4))
-          DELAY=max(750,int(cmd.get('delay_ms',1000)))/1000
-          MAX_REQUESTS=int(cmd.get('max_requests',16))
-          ALLOWED={'https://app.wisdomtreeconnect.com/api/'}
-          assert TARGET in ALLOWED, f'out-of-scope target blocked: {TARGET}'
-          assert 2 <= ROUNDS <= 5
-          assert MAX_REQUESTS <= 20
+          variants={'baseline':'','literal':'?q=A','encoded':'?q=%41','distinct':'?q=B'}
+          assert len(variants)*ROUNDS <= MAX_REQUESTS
+          headers={'User-Agent':'BugBounty-AI/3.2 WisdomTree encoding-validation low-volume','Accept':'text/html,application/xhtml+xml,*/*;q=0.8'}
 
-          # Four benign controls, four rounds each = 16 requests total.
-          # literal and encoded are logically equivalent; distinct is a negative control.
-          variants={
-              'baseline':'',
-              'literal':'?q=A',
-              'encoded':'?q=%41',
-              'distinct':'?q=B',
-          }
-          planned=len(variants)*ROUNDS
-          assert planned <= MAX_REQUESTS
-
-          UA='BugBounty-AI/3.1 WisdomTree encoding-validation low-volume'
-          headers={'User-Agent':UA, 'Accept':'text/html,application/xhtml+xml,*/*;q=0.8'}
-
-          def sha(b): return hashlib.sha256(b).hexdigest()
-
-          def normalize_text(text):
-              s=text
-              # Mask common volatile response values without erasing semantic HTML structure.
-              s=re.sub(r'(?i)(csrfmiddlewaretoken["\'\s:=]+)[A-Za-z0-9_-]{16,}', r'\1<VOLATILE>', s)
-              s=re.sub(r'(?i)(nonce=["\'])[A-Za-z0-9_+/=-]{8,}(["\'])', r'\1<VOLATILE>\2', s)
-              s=re.sub(r'(?i)(ray id:?[\s<]*)([0-9a-f]{12,})', r'\1<VOLATILE>', s)
+          def sha_bytes(b): return hashlib.sha256(b).hexdigest()
+          def normalize(s):
+              s=re.sub(r'(?i)(csrfmiddlewaretoken["\'\s:=]+)[A-Za-z0-9_-]{16,}',r'\1<VOLATILE>',s)
+              s=re.sub(r'(?i)(nonce=["\'])[A-Za-z0-9_+/=-]{8,}(["\'])',r'\1<VOLATILE>\2',s)
+              s=re.sub(r'(?i)(ray id:?[\s<]*)([0-9a-f]{12,})',r'\1<VOLATILE>',s)
               s=re.sub(r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b','<UUID>',s)
               s=re.sub(r'\b20\d\d-[01]\d-[0-3]\d[T ][0-2]\d:[0-5]\d:[0-5]\d(?:\.\d+)?Z?\b','<TIMESTAMP>',s)
               return s
-
-          def structure(text):
-              title=re.search(r'<title[^>]*>(.*?)</title>', text, re.I|re.S)
-              scripts=sorted(set(unescape(x) for x in re.findall(r'<script[^>]+src=["\']([^"\']+)', text, re.I)))
-              links=sorted(set(unescape(x) for x in re.findall(r'<link[^>]+href=["\']([^"\']+)', text, re.I)))
-              forms=sorted(set(unescape(x) for x in re.findall(r'<form[^>]+action=["\']([^"\']*)', text, re.I)))
+          def structure(s):
+              title=re.search(r'<title[^>]*>(.*?)</title>',s,re.I|re.S)
               return {
-                  'title': re.sub(r'\s+',' ',title.group(1)).strip() if title else '',
-                  'scripts': scripts,
-                  'links': links,
-                  'forms': forms,
-                  'tag_counts': {t:len(re.findall(fr'<{t}\b',text,re.I)) for t in ('html','body','div','script','link','form','input')},
+                'title':re.sub(r'\s+',' ',title.group(1)).strip() if title else '',
+                'scripts':sorted(set(unescape(x) for x in re.findall(r'<script[^>]+src=["\']([^"\']+)',s,re.I))),
+                'links':sorted(set(unescape(x) for x in re.findall(r'<link[^>]+href=["\']([^"\']+)',s,re.I))),
+                'forms':sorted(set(unescape(x) for x in re.findall(r'<form[^>]+action=["\']([^"\']*)',s,re.I))),
+                'tags':{t:len(re.findall(fr'<{t}\b',s,re.I)) for t in ('html','body','div','script','link','form','input')},
               }
+          def shingles(s):
+              toks=re.findall(r'[a-z][a-z0-9_./:-]{2,}',s.lower())
+              return {' '.join(toks[i:i+3]) for i in range(max(0,len(toks)-2))}
+          def jaccard(a,b):
+              if not a and not b:return 1.0
+              return len(a&b)/max(1,len(a|b))
+          def first_diff(a,b,window=180):
+              n=min(len(a),len(b)); i=0
+              while i<n and a[i]==b[i]: i+=1
+              if i==n and len(a)==len(b): return {'index':None,'a':'','b':''}
+              lo=max(0,i-window); hi=min(max(len(a),len(b)),i+window)
+              return {'index':i,'a':a[lo:hi],'b':b[lo:hi]}
 
-          def similarity(a,b):
-              return difflib.SequenceMatcher(None,a,b,autojunk=False).ratio()
-
-          def diff_excerpt(a,b,limit=8):
-              al=a.splitlines(); bl=b.splitlines(); out=[]
-              for line in difflib.unified_diff(al,bl,fromfile='a',tofile='b',n=1):
-                  if line.startswith(('---','+++','@@')): continue
-                  if line.startswith(('+','-')):
-                      out.append(line[:500])
-                      if len(out)>=limit: break
-              return out
-
-          samples={k:[] for k in variants}
-          request_count=0
-          for round_no in range(ROUNDS):
+          samples={k:[] for k in variants}; count=0
+          for rnd in range(ROUNDS):
               for name,suffix in variants.items():
-                  url=TARGET+suffix
-                  started=time.time()
+                  url=TARGET+suffix; t0=time.time()
                   try:
-                      r=requests.get(url,headers=headers,timeout=15,allow_redirects=False)
-                      body=r.content
-                      text=r.text
-                      norm=normalize_text(text)
+                      r=requests.get(url,headers=headers,timeout=12,allow_redirects=False)
+                      text=r.text; norm=normalize(text); sh=shingles(norm)
                       item={
-                          'round':round_no+1,
-                          'url':url,
-                          'status':r.status_code,
-                          'bytes':len(body),
-                          'ctype':r.headers.get('content-type',''),
-                          'location':r.headers.get('location',''),
-                          'server':r.headers.get('server',''),
-                          'cf_ray':r.headers.get('cf-ray',''),
-                          'cf_cache_status':r.headers.get('cf-cache-status',''),
-                          'cache_control':r.headers.get('cache-control',''),
-                          'etag':r.headers.get('etag',''),
-                          'vary':r.headers.get('vary',''),
-                          'elapsed_ms':round((time.time()-started)*1000,1),
-                          'raw_sha256':sha(body),
-                          'normalized_sha256':sha(norm.encode('utf-8','replace')),
-                          'structure':structure(text),
-                          'query_reflections':{
-                              '?q=A':'?q=A' in text,
-                              '?q=%41':'?q=%41' in text,
-                              'q=A':'q=A' in text,
-                              'q=%41':'q=%41' in text,
-                          },
-                          '_text':text,
-                          '_norm':norm,
+                        'round':rnd+1,'url':url,'status':r.status_code,'bytes':len(r.content),
+                        'ctype':r.headers.get('content-type',''),'location':r.headers.get('location',''),
+                        'server':r.headers.get('server',''),'cf_ray':r.headers.get('cf-ray',''),
+                        'cf_cache_status':r.headers.get('cf-cache-status',''),'cache_control':r.headers.get('cache-control',''),
+                        'etag':r.headers.get('etag',''),'vary':r.headers.get('vary',''),
+                        'elapsed_ms':round((time.time()-t0)*1000,1),'raw_sha256':sha_bytes(r.content),
+                        'normalized_sha256':sha_bytes(norm.encode()),'structure':structure(text),
+                        'query_reflections':{'?q=A':'?q=A' in text,'?q=%41':'?q=%41' in text,'q=A':'q=A' in text,'q=%41':'q=%41' in text},
+                        '_norm':norm,'_sh':sh,
                       }
                   except Exception as e:
-                      item={'round':round_no+1,'url':url,'error':repr(e),'_text':'','_norm':''}
-                  samples[name].append(item)
-                  request_count+=1
-                  time.sleep(DELAY)
+                      item={'round':rnd+1,'url':url,'error':repr(e),'_norm':'','_sh':set()}
+                  samples[name].append(item); count+=1; time.sleep(DELAY)
 
-          def public_item(x): return {k:v for k,v in x.items() if not k.startswith('_')}
-          def valid(group): return [x for x in samples[group] if 'error' not in x]
-
-          def intra_similarity(group):
-              xs=valid(group)
-              vals=[similarity(a['_norm'],b['_norm']) for a,b in itertools.combinations(xs,2)]
+          def valid(g): return [x for x in samples[g] if 'error' not in x]
+          def intra(g):
+              x=valid(g); vals=[]
+              for i in range(len(x)):
+                  for j in range(i+1,len(x)): vals.append(jaccard(x[i]['_sh'],x[j]['_sh']))
               return statistics.median(vals) if vals else 1.0
+          def public(x): return {k:v for k,v in x.items() if not k.startswith('_')}
 
-          lit=valid('literal'); enc=valid('encoded'); dist=valid('distinct'); base=valid('baseline')
-          cross=[similarity(a['_norm'],b['_norm']) for a,b in zip(lit,enc)]
-          cross_dist=[similarity(a['_norm'],b['_norm']) for a,b in zip(lit,dist)]
-          cross_med=statistics.median(cross) if cross else 0.0
-          dist_med=statistics.median(cross_dist) if cross_dist else 0.0
-          intra_lit=intra_similarity('literal'); intra_enc=intra_similarity('encoded')
-          intra_floor=min(intra_lit,intra_enc)
-
+          lit,enc,dist=valid('literal'),valid('encoded'),valid('distinct')
+          cross=[jaccard(a['_sh'],b['_sh']) for a,b in zip(lit,enc)]
+          cross_dist=[jaccard(a['_sh'],b['_sh']) for a,b in zip(lit,dist)]
+          cross_med=statistics.median(cross) if cross else 0.0; dist_med=statistics.median(cross_dist) if cross_dist else 0.0
+          intra_lit,intra_enc=intra('literal'),intra('encoded'); intra_floor=min(intra_lit,intra_enc)
           same_status=bool(lit and enc) and all(a['status']==b['status'] for a,b in zip(lit,enc))
           same_ctype=bool(lit and enc) and all(a['ctype']==b['ctype'] for a,b in zip(lit,enc))
           same_length=bool(lit and enc) and all(a['bytes']==b['bytes'] for a,b in zip(lit,enc))
-          structures_equal=bool(lit and enc) and all(a['structure']==b['structure'] for a,b in zip(lit,enc))
+          same_structure=bool(lit and enc) and all(a['structure']==b['structure'] for a,b in zip(lit,enc))
           raw_unique={g:len({x.get('raw_sha256') for x in valid(g)}) for g in variants}
           norm_unique={g:len({x.get('normalized_sha256') for x in valid(g)}) for g in variants}
+          reflections={g:[x.get('query_reflections',{}) for x in valid(g)] for g in variants}
 
-          stable_within=(intra_floor >= 0.99999)
-          material_cross=(cross_med < 0.995 and (intra_floor-cross_med) > 0.002)
-          equivalent_after_normalization=(cross_med >= 0.99999 and structures_equal and same_status and same_ctype)
-
-          if equivalent_after_normalization:
-              verdict='false_positive_dynamic_or_nonsemantic_response_variance'
-              security_relevance='none_observed'
-          elif stable_within and material_cross:
-              verdict='persistent_encoding_differential_candidate'
-              security_relevance='requires_manual_semantic_review'
-          elif cross_med >= intra_floor-0.0005 and same_status and same_ctype and structures_equal:
-              verdict='false_positive_variance_not_correlated_with_encoding'
-              security_relevance='none_observed'
+          exact_norm_equiv=bool(lit and enc) and all(a['normalized_sha256']==b['normalized_sha256'] for a,b in zip(lit,enc))
+          correlation_gap=intra_floor-cross_med
+          if same_status and same_ctype and same_structure and (exact_norm_equiv or (cross_med>=0.999 and correlation_gap<=0.0005)):
+              verdict='false_positive_variance_not_correlated_with_encoding'; relevance='none_observed'
+          elif intra_floor>=0.999 and correlation_gap>0.005 and cross_med<0.995:
+              verdict='persistent_encoding_differential_candidate'; relevance='manual_semantic_review_required'
           else:
-              verdict='inconclusive_low_signal_encoding_difference'
-              security_relevance='not_confirmed'
+              verdict='inconclusive_low_signal_encoding_difference'; relevance='not_confirmed'
 
           result={
-              'target':TARGET,
-              'scope_gate':'exact allowlist passed',
-              'requests_made':request_count,
-              'rounds':ROUNDS,
-              'verdict':verdict,
-              'security_relevance':security_relevance,
-              'metrics':{
-                  'same_status_each_round':same_status,
-                  'same_content_type_each_round':same_ctype,
-                  'same_length_each_round':same_length,
-                  'same_structure_each_round':structures_equal,
-                  'literal_intra_normalized_similarity_median':intra_lit,
-                  'encoded_intra_normalized_similarity_median':intra_enc,
-                  'literal_vs_encoded_normalized_similarity_median':cross_med,
-                  'literal_vs_distinct_normalized_similarity_median':dist_med,
-                  'raw_unique_hashes':raw_unique,
-                  'normalized_unique_hashes':norm_unique,
-              },
-              'samples':{g:[public_item(x) for x in samples[g]] for g in variants},
-              'diff_excerpts':{
-                  'literal_vs_encoded_round1':diff_excerpt(lit[0]['_norm'],enc[0]['_norm']) if lit and enc else [],
-                  'literal_repeat_round1_vs_round2':diff_excerpt(lit[0]['_norm'],lit[1]['_norm']) if len(lit)>1 else [],
-                  'encoded_repeat_round1_vs_round2':diff_excerpt(enc[0]['_norm'],enc[1]['_norm']) if len(enc)>1 else [],
-              },
-              'reasoning':[
-                  'Equivalent q=A and q=%41 are compared across repeated rounds.',
-                  'Repeated identical requests establish natural response variance before attributing differences to encoding.',
-                  'A q=B negative control measures whether the query value materially influences the public 404 response.',
-                  'No authentication, state-changing method, data modification, privilege escalation, or destructive action is used.',
-              ],
+            'target':TARGET,'scope_gate':'exact allowlist passed','requests_made':count,'rounds':ROUNDS,
+            'verdict':verdict,'security_relevance':relevance,
+            'metrics':{'same_status':same_status,'same_ctype':same_ctype,'same_length':same_length,'same_structure':same_structure,
+              'literal_intra_semantic_similarity_median':intra_lit,'encoded_intra_semantic_similarity_median':intra_enc,
+              'literal_vs_encoded_semantic_similarity_median':cross_med,'literal_vs_distinct_semantic_similarity_median':dist_med,
+              'correlation_gap':correlation_gap,'exact_normalized_equivalence_each_round':exact_norm_equiv,
+              'raw_unique_hashes':raw_unique,'normalized_unique_hashes':norm_unique},
+            'reflections':reflections,
+            'samples':{g:[public(x) for x in samples[g]] for g in variants},
+            'diff_context':{
+              'literal_vs_encoded_round1':first_diff(lit[0]['_norm'],enc[0]['_norm']) if lit and enc else {},
+              'literal_repeat_round1_round2':first_diff(lit[0]['_norm'],lit[1]['_norm']) if len(lit)>1 else {},
+            },
+            'reasoning':['Repeated identical requests establish natural variance.','q=A and q=%41 test equivalent encoding.','q=B is a negative control.','GET only; no auth, state changes, destructive behavior, or sensitive-data collection.']
           }
           json.dump(result,open('validation/wisdomtree-encoding-validation.json','w'),indent=2)
           with open('validation/summary.txt','w') as f:
-              f.write(f"Verdict: {verdict}\n")
-              f.write(f"Security relevance: {security_relevance}\n")
-              f.write(f"Requests: {request_count}\n")
-              f.write(f"same_status={same_status} same_ctype={same_ctype} same_length={same_length} same_structure={structures_equal}\n")
-              f.write(f"intra_literal={intra_lit:.8f} intra_encoded={intra_enc:.8f} cross_equivalent={cross_med:.8f} cross_distinct={dist_med:.8f}\n")
-              f.write(f"raw_unique={raw_unique}\nnormalized_unique={norm_unique}\n")
+              f.write(f'Verdict: {verdict}\nSecurity relevance: {relevance}\nRequests: {count}\n')
+              f.write(f'same_status={same_status} same_ctype={same_ctype} same_length={same_length} same_structure={same_structure}\n')
+              f.write(f'intra_literal={intra_lit:.8f} intra_encoded={intra_enc:.8f} cross_equivalent={cross_med:.8f} cross_distinct={dist_med:.8f} gap={correlation_gap:.8f}\n')
+              f.write(f'raw_unique={raw_unique}\nnormalized_unique={norm_unique}\n')
           print(open('validation/summary.txt').read())
           PY
       - name: Upload validation evidence
