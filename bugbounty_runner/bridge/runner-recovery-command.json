@@ -1,9 +1,9 @@
 {
   "bridge_name": "HUNTER8",
-  "command_id": "titan-vpro-recovery-template",
+  "command_id": "titan-vpro-wisdomtree-runner8-recovery-20260812-1829",
   "action": "scan_runner",
-  "config_path": "bugbounty_runner/config.example.json",
-  "runner": 0,
-  "requested_by": "template",
-  "notes": "TITAN V PRO isolated runner recovery. Use only with an already reviewed, scope-safe config."
+  "config_path": "bugbounty_runner/config.titan-wisdomtree.json",
+  "runner": 8,
+  "requested_by": "chatgpt",
+  "notes": "Recover only missing TITAN V PRO runner 8 for the WisdomTree verification campaign. Same reviewed HackerOne scope and V PRO safety profile; do not repeat other runners."
 }
