@@ -1,0 +1,124 @@
+name: CBMPC PVE Batch Parser Fuzz V8
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-pve-batch-parser-fuzz-v8.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Clone exact cb-mpc HEAD
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout 2369813b8b0507ce20febd1d81ef1708cdbb42d7 >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+
+      - name: Add PVE parser mutation test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >> cb-mpc/tests/unit/api/test_pve_batch.cpp <<'CPP'
+
+          TEST(ApiPveBatch, ParserMutationSanitizedCampaign) {
+            const toy_base_pke_t base_pke;
+            const curve_id curve = curve_id::secp256k1;
+            const buf_t ek("ek"), dk("dk"), label("label");
+            constexpr int n=4;
+            std::array<std::array<uint8_t,32>,n> xb{};
+            std::vector<mem_t> xs;
+            for(int i=0;i<n;i++){for(int j=0;j<32;j++)xb[i][j]=(uint8_t)(0x21+i+j);xs.emplace_back(xb[i].data(),32);}
+            buf_t ct;
+            ASSERT_EQ(coinbase::api::pve::encrypt_batch(base_pke,curve,ek,label,xs,ct),SUCCESS);
+            ASSERT_GT(ct.size(),64);
+
+            std::vector<buf_t> expected_qs;
+            for(int i=0;i<n;i++) expected_qs.push_back(expected_Q(curve,xs[i]));
+            std::vector<mem_t> expected_qm; for(auto& q:expected_qs) expected_qm.emplace_back(q.data(),q.size());
+
+            std::ofstream out("/code/pve-results.txt",std::ios::trunc);
+            out<<"ct_size="<<ct.size()<<"\n";
+
+            auto exercise=[&](const char* kind,int id,const buf_t& m){
+              int bc=-1;buf_t lab;std::vector<buf_t> qs,plain;
+              error_t r1=E_GENERAL,r2=E_GENERAL,r3=E_GENERAL,r4=E_GENERAL,r5=E_GENERAL;
+              bool exc=false;
+              try{r1=coinbase::api::pve::get_batch_count(m,bc);}catch(...){exc=true;}
+              try{r2=coinbase::api::pve::get_Label_batch(m,lab);}catch(...){exc=true;}
+              try{r3=coinbase::api::pve::get_public_keys_compressed_batch(m,qs);}catch(...){exc=true;}
+              try{r4=coinbase::api::pve::verify_batch(base_pke,curve,ek,m,expected_qm,label);}catch(...){exc=true;}
+              try{r5=coinbase::api::pve::decrypt_batch(base_pke,curve,dk,ek,m,label,plain);}catch(...){exc=true;}
+              bool suspicious=(r1==SUCCESS||r2==SUCCESS||r3==SUCCESS||r4==SUCCESS||r5==SUCCESS||exc);
+              if(suspicious) out<<kind<<" id="<<id<<" size="<<m.size()<<" r="<<r1<<','<<r2<<','<<r3<<','<<r4<<','<<r5<<" bc="<<bc<<" qs="<<qs.size()<<" plain="<<plain.size()<<" exc="<<exc<<"\n";
+              out.flush();
+            };
+
+            const int positions=96;
+            for(int k=0;k<positions;k++){
+              int pos=(int)((int64_t)k*(ct.size()-1)/(positions-1));
+              for(int mode=0;mode<3;mode++){
+                buf_t m(ct);m[pos]^=(uint8_t)(mode==0?0x01:mode==1?0x80:0xFF);exercise("flip",k*3+mode,m);
+              }
+            }
+            for(int cut=0;cut<96;cut++){
+              int keep=(int)((int64_t)cut*(ct.size()-1)/95);
+              if(keep<1)keep=1;buf_t m(ct.take(keep));exercise("trunc",cut,m);
+            }
+            for(int pos=0;pos<std::min(ct.size(),64);pos++){
+              buf_t m(ct);m[pos]=0;exercise("zero_head",pos,m);
+              buf_t z(ct);z[pos]=0xFF;exercise("ff_head",pos,z);
+            }
+            out<<"complete\n";
+          }
+          CPP
+
+      - name: Build and run ASAN UBSAN PVE campaign
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 40m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiPveBatch.ParserMutationSanitizedCampaign' >/tmp/sanitize.log 2>&1
+          status=$?
+          set -e
+          echo "exit_status=$status" >/tmp/status.txt
+          cp pve-results.txt /tmp/pve-results.txt 2>/dev/null || echo 'no pve result file' >/tmp/pve-results.txt
+          echo 'PVE sanitizer campaign finished; detailed result encrypted next'
+
+      - name: Encrypt results
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >/tmp/pub.pem <<'PEM'
+          -----BEGIN PUBLIC KEY-----
+          MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7/qgkP0IpHQIfyKQYwvS
+          Ufx+aug+cHi7A8R3ar0n/FT2FBK0aphD0Jyfp5aq87UIXIjfGA9gdtRsnrxB/iBa
+          xtyXtb6m0KKTPU6uPFuWt7e/2BFR7ic3L54hAjJy9Akrstloqbd7CVQULC8okIQS
+          1xQYEBW8URYsAo2L748AckGQjy2V15jHq7fC6MLeK4p+/D1iFijMVGFvBvLpUgSN
+          RnJagoaiR1eJjUQfkA2+31PGTevs8405ZUnWYJ3w4ikHwdEf65OV1AovGuIBwekn
+          Xst6y7BEid59Gv5EU+nhQg5TRDrpIYo7qETP9BwqJmHqw6yaEg4sqJGpkrr3Ne5N
+          pQIDAQAB
+          -----END PUBLIC KEY-----
+          PEM
+          mkdir -p /tmp/r;cp /tmp/status.txt /tmp/r/ 2>/dev/null||true;cp /tmp/pve-results.txt /tmp/r/ 2>/dev/null||true;cp /tmp/sanitize.log /tmp/r/ 2>/dev/null||true;cp /tmp/image-build.log /tmp/r/ 2>/dev/null||true
+          tar -C /tmp/r -czf /tmp/r.tar.gz .;openssl rand -hex 32 >/tmp/pass.txt;openssl enc -aes-256-cbc -pbkdf2 -salt -in /tmp/r.tar.gz -out /tmp/r.tar.gz.enc -pass file:/tmp/pass.txt;openssl pkeyutl -encrypt -pubin -inkey /tmp/pub.pem -pkeyopt rsa_padding_mode:oaep -in /tmp/pass.txt -out /tmp/pass.txt.enc
+          rm -rf /tmp/r /tmp/r.tar.gz /tmp/pass.txt /tmp/status.txt /tmp/pve-results.txt /tmp/sanitize.log /tmp/image-build.log
+
+      - name: Upload encrypted artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cbmpc-pve-parser-v8
+          path: |
+            /tmp/r.tar.gz.enc
+            /tmp/pass.txt.enc
+          retention-days: 1
