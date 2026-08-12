@@ -25,6 +25,15 @@
       "validated_candidates": [],
       "confirmed_vulnerabilities": [],
       "novel_anomalies": []
+    },
+    "wisdomtree": {
+      "hosts": {},
+      "false_positives": [
+        {"fingerprint":"5595ffbc8014c96808d04cbc","program":"wisdomtree","host":"app.wisdomtreeconnect.com","bug_class":"encoding_diff","signal":"Equivalent input encodings produce different responses | https://app.wisdomtreeconnect.com/api/","reason":"validated false positive: q=A and q=%41 were semantically identical across repeated low-impact checks; raw body hash variance came from dynamic telemetry applicationTime and was not correlated with encoding"}
+      ],
+      "validated_candidates": [],
+      "confirmed_vulnerabilities": [],
+      "novel_anomalies": []
     }
   },
   "global_false_positives": [
@@ -35,12 +44,14 @@
     {"fingerprint":"seed-staking-server-status","program":"polygon","host":"staking.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: frontend fallback without Apache server-status signature"},
     {"fingerprint":"seed-token-server-status","program":"polygon","host":"api-polygon-tokens.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: exact same JSON response as API root"},
     {"fingerprint":"seed-app-sensitive-fallback","program":"klarna","host":"app.klarna.com","bug_class":"sensitive_files","signal":"/.git/HEAD and /server-status","reason":"validated false positives: exact same frontend HTML fallback as root"},
-    {"fingerprint":"seed-playground-sensitive-fallback","program":"klarna","host":"portal.playground.klarna.com","bug_class":"sensitive_files","signal":"/.git/HEAD and /server-status","reason":"validated false positives: HTML application response with neither Git HEAD nor Apache server-status signature"}
+    {"fingerprint":"seed-playground-sensitive-fallback","program":"klarna","host":"portal.playground.klarna.com","bug_class":"sensitive_files","signal":"/.git/HEAD and /server-status","reason":"validated false positives: HTML application response with neither Git HEAD nor Apache server-status signature"},
+    {"fingerprint":"5595ffbc8014c96808d04cbc","program":"wisdomtree","host":"app.wisdomtreeconnect.com","bug_class":"encoding_diff","signal":"Equivalent input encodings produce different responses | https://app.wisdomtreeconnect.com/api/","reason":"validated false positive: q=A and q=%41 were semantically identical across repeated low-impact checks; raw body hash variance came from dynamic telemetry applicationTime and was not correlated with encoding"}
   ],
   "confirmed_vulnerabilities": [],
   "novel_anomalies": [],
   "history": [
     {"event":"bootstrap","note":"Initialized from validated TITAN results so known Polygon false positives are not treated as new findings again."},
-    {"event":"migration_v2","note":"Added novel_anomalies support and recorded false positives from 12-runner validation."}
+    {"event":"migration_v2","note":"Added novel_anomalies support and recorded false positives from 12-runner validation."},
+    {"event":"false_positive_validation","program":"wisdomtree","host":"app.wisdomtreeconnect.com","bug_class":"encoding_diff","fingerprint":"5595ffbc8014c96808d04cbc","note":"Rigorous repeated validation showed q=A and q=%41 are semantically identical; dynamic New Relic applicationTime caused hash-only variance."}
   ]
 }
