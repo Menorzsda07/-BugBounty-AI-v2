@@ -8,34 +8,44 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   recon:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - name: Download previously-built cyber toolkit
+        uses: actions/download-artifact@v4
         with:
-          go-version: '1.25.x'
-          cache: false
+          name: cyber-toolkit-linux-amd64
+          path: ${{ runner.temp }}/toolkit-artifact
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: 31538290212
 
-      - name: Install low-impact recon tools
+      - name: Download templates/fixes
+        uses: actions/download-artifact@v4
+        with:
+          name: cyber-fixes-linux-amd64
+          path: ${{ runner.temp }}/fixes-artifact
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: 31539250787
+
+      - name: Prepare toolkit
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/bin"
-          export GOBIN="$RUNNER_TEMP/bin"
-          go install github.com/projectdiscovery/httpx/cmd/httpx@latest >/dev/null 2>&1
-          go install github.com/projectdiscovery/katana/cmd/katana@latest >/dev/null 2>&1
-          go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest >/dev/null 2>&1
+          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/toolkit-artifact/cyber-toolkit-linux-amd64.tar.gz"
+          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/fixes-artifact/cyber-fixes-linux-amd64.tar.gz"
+          chmod +x "$RUNNER_TEMP/cyber-toolkit/bin/"* || true
 
       - name: Run scoped low-rate UAT reconnaissance
         shell: bash
         run: |
           set -euo pipefail
-          export PATH="$RUNNER_TEMP/bin:$PATH"
+          export PATH="$RUNNER_TEMP/cyber-toolkit/bin:$PATH"
           OUT="$RUNNER_TEMP/syfe-findings"
           mkdir -p "$OUT"
 
@@ -45,7 +55,6 @@ jobs:
           https://alfred-uat-31.nonprod.syfe.com
           EOF
 
-          # Baseline only: one request per target.
           : > "$OUT/baseline.txt"
           while read -r u; do
             printf '=== %s ===\n' "$u" >> "$OUT/baseline.txt"
@@ -53,23 +62,19 @@ jobs:
             printf '\n' >> "$OUT/baseline.txt"
           done < "$OUT/targets.txt"
 
-          # Low-rate technology/status probing.
           httpx -l "$OUT/targets.txt" -silent -status-code -title -tech-detect -follow-redirects \
             -rate-limit 2 -threads 1 -timeout 8 -retries 0 > "$OUT/httpx.txt" 2>/dev/null || true
 
-          # Crawl only the primary UAT app, depth 2, 2 req/s, single worker.
           katana -u https://uat-bugbounty.nonprod.syfe.com -silent -d 2 -rl 2 -c 1 -p 1 \
             -timeout 8 -retry 0 -jc -kf all -fs fqdn -o "$OUT/katana.txt" >/dev/null 2>&1 || true
 
-          # Extract likely API/parameter-bearing URLs for later manual validation.
           grep -E '(^|[?&])[^=]+=|/api/|/v[0-9]+/' "$OUT/katana.txt" 2>/dev/null | sort -u > "$OUT/candidate-urls.txt" || true
 
-          # High/critical templates only; exclude intrusive/DoS/fuzz/bruteforce classes.
-          nuclei -l "$OUT/targets.txt" -silent -severity high,critical \
+          nuclei -l "$OUT/targets.txt" -t "$RUNNER_TEMP/cyber-fixes/nuclei-templates" -silent \
+            -severity high,critical \
             -exclude-tags dos,fuzz,intrusive,bruteforce,credential-stuffing,token-spray \
             -rl 2 -c 1 -bs 1 -timeout 8 -retries 0 -jsonl -o "$OUT/nuclei.jsonl" >/dev/null 2>&1 || true
 
-          # Keep a small manifest without disclosing findings in logs.
           {
             echo "completed_utc=$(date -u +%FT%TZ)"
             echo "targets=3"
@@ -82,7 +87,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          OUT="$RUNNER_TEMP/syfe-findings"
           WORK="$RUNNER_TEMP/encrypted"
           mkdir -p "$WORK"
 
