@@ -1,0 +1,99 @@
+name: CBMPC Targeted Release Crash V5
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-targeted-release-crash-v5.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Clone exact cb-mpc revision
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout 2369813b8b0507ce20febd1d81ef1708cdbb42d7 >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+
+      - name: Prepare exact targeted harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          p.write_text(p.read_text().replace('    delete queue.front();','    test_message_buffer_t::free(queue.front());'))
+          PY
+          curl -fsSL 'https://raw.githubusercontent.com/Menorzsda07/-BugBounty-AI-v2/main/.github/workflows/cbmpc-targeted-inner-message-v3.yml' -o /tmp/v3.yml
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+          text=Path('/tmp/v3.yml').read_text()
+          marker="cat >> cb-mpc/tests/unit/api/test_ecdsa_mp.cpp <<'CPP'\n"
+          start=text.index(marker)+len(marker)
+          end=text.index('\n          CPP',start)
+          block=textwrap.dedent(text[start:end])
+          with Path('cb-mpc/tests/unit/api/test_ecdsa_mp.cpp').open('a') as f:
+              f.write('\n'+block+'\n}\n')
+          PY
+
+      - name: Build Release and reproduce
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 30m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc '
+            cmake -B build/release-poc -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON >/tmp/cmake-poc.log 2>&1 &&
+            cmake --build build/release-poc -- -j2 >/tmp/build-poc.log 2>&1 &&
+            ctest --output-on-failure -j1 --test-dir build/release-poc -R ApiEcdsaMp.TargetedInnerBundleMutation
+          ' >/tmp/release-run.log 2>&1
+          status=$?
+          set -e
+          echo "exit_status=$status" >/tmp/status.txt
+          cp targeted-results.txt /tmp/targeted-results.txt 2>/dev/null || echo 'no targeted result file' >/tmp/targeted-results.txt
+          echo 'release reproduction finished; detailed output encrypted'
+
+      - name: Encrypt results
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >/tmp/pub.pem <<'PEM'
+          -----BEGIN PUBLIC KEY-----
+          MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7/qgkP0IpHQIfyKQYwvS
+          Ufx+aug+cHi7A8R3ar0n/FT2FBK0aphD0Jyfp5aq87UIXIjfGA9gdtRsnrxB/iBa
+          xtyXtb6m0KKTPU6uPFuWt7e/2BFR7ic3L54hAjJy9Akrstloqbd7CVQULC8okIQS
+          1xQYEBW8URYsAo2L748AckGQjy2V15jHq7fC6MLeK4p+/D1iFijMVGFvBvLpUgSN
+          RnJagoaiR1eJjUQfkA2+31PGTevs8405ZUnWYJ3w4ikHwdEf65OV1AovGuIBwekn
+          Xst6y7BEid59Gv5EU+nhQg5TRDrpIYo7qETP9BwqJmHqw6yaEg4sqJGpkrr3Ne5N
+          pQIDAQAB
+          -----END PUBLIC KEY-----
+          PEM
+          mkdir -p /tmp/r
+          cp /tmp/status.txt /tmp/r/ 2>/dev/null || true
+          cp /tmp/targeted-results.txt /tmp/r/ 2>/dev/null || true
+          cp /tmp/release-run.log /tmp/r/ 2>/dev/null || true
+          cp /tmp/image-build.log /tmp/r/ 2>/dev/null || true
+          tar -C /tmp/r -czf /tmp/r.tar.gz .
+          openssl rand -hex 32 >/tmp/pass.txt
+          openssl enc -aes-256-cbc -pbkdf2 -salt -in /tmp/r.tar.gz -out /tmp/r.tar.gz.enc -pass file:/tmp/pass.txt
+          openssl pkeyutl -encrypt -pubin -inkey /tmp/pub.pem -pkeyopt rsa_padding_mode:oaep -in /tmp/pass.txt -out /tmp/pass.txt.enc
+          rm -rf /tmp/r /tmp/r.tar.gz /tmp/pass.txt /tmp/status.txt /tmp/targeted-results.txt /tmp/release-run.log /tmp/image-build.log
+
+      - name: Upload encrypted artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cbmpc-release-crash-v5
+          path: |
+            /tmp/r.tar.gz.enc
+            /tmp/pass.txt.enc
+          retention-days: 1
