@@ -1,0 +1,95 @@
+name: TITAN V PRO Wolt Phase 2
+
+on:
+  push:
+    paths:
+      - 'bugbounty_runner/bridge/wolt-phase2-command.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Wolt Phase 2 scope and header preflight
+        run: |
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+          sys.path.insert(0, 'bugbounty_runner')
+          from titan_v_pro_core import validate_config
+          cfg = json.loads(Path('bugbounty_runner/config.titan-wolt-phase2.json').read_text())
+          errors = validate_config(cfg)
+          if errors:
+              raise SystemExit('; '.join(errors))
+          expected = {
+              'https://ops.wolt.com',
+              'https://merchant.wolt.com',
+              'https://drive.wolt.com',
+              'https://corporate.wolt.com',
+          }
+          targets = set(cfg['programs'][0]['targets'])
+          if targets != expected:
+              raise SystemExit(f'Wolt Phase 2 target mismatch: {targets}')
+          if cfg.get('request_headers', {}).get('X-HackerOne-Research') != 'ghosther':
+              raise SystemExit('required X-HackerOne-Research header missing')
+          if cfg.get('aggressive_modules'):
+              raise SystemExit('aggressive modules forbidden')
+          print('Wolt Phase 2 preflight OK')
+          PY
+      - name: Compile identified scanner
+        run: python -m py_compile bugbounty_runner/identified_scan.py bugbounty_runner/multi_scan.py bugbounty_runner/titan_v_pro_core.py
+
+  scan:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        runner: [0, 1, 2, 4, 5, 6, 8, 9, 10, 11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install runtime
+        run: python -m pip install --disable-pip-version-check requests
+      - name: Run low-volume identified Wolt admin-surface scan
+        run: |
+          mkdir -p results
+          python bugbounty_runner/identified_scan.py \
+            --config bugbounty_runner/config.titan-wolt-phase2.json \
+            --runner ${{ matrix.runner }} \
+            --out results/runner-${{ matrix.runner }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: titan-wolt-phase2-${{ matrix.runner }}
+          path: results/runner-${{ matrix.runner }}.json
+          retention-days: 2
+
+  analyze:
+    needs: scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: titan-wolt-phase2-*
+          path: results
+          merge-multiple: true
+      - name: Aggregate with Brain Code VSystem
+        run: |
+          python bugbounty_runner/analyze.py
+          cp bugbounty_runner/memory/brain-code-vsystem.json results/brain-code-vsystem-snapshot.json || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: titan-wolt-phase2-combined-analysis
+          path: results/
+          retention-days: 2
