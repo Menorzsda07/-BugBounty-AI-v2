@@ -82,6 +82,25 @@ class TitanVProCoreTests(unittest.TestCase):
             brain = BrainCodeVSystem(mem, know)
             self.assertTrue(brain.is_known_false_positive('p', 'h.example', 'sensitive_files', 'anything'))
 
+    def test_unmapped_module_does_not_guess_wrong_family(self):
+        with tempfile.TemporaryDirectory() as td:
+            mem = Path(td) / 'memory.json'
+            know = Path(td) / 'knowledge.json'
+            know.write_text(json.dumps({
+                'module_family_map': {'encoding_diff': 'input-normalization'},
+                'families': [{
+                    'id': 'input-normalization', 'cwe': ['CWE-180'],
+                    'signals': ['normalization order changes security boundary'],
+                    'common_false_positives': [], 'impact': ['filter bypass']
+                }]
+            }))
+            brain = BrainCodeVSystem(mem, know)
+            self.assertIsNone(brain.classify_family('Security headers absent', module='headers'))
+            self.assertEqual(
+                brain.classify_family('Equivalent encodings differ', module='encoding_diff').get('id'),
+                'input-normalization'
+            )
+
 
 if __name__ == '__main__':
     unittest.main()
