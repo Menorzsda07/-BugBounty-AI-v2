@@ -1,0 +1,8 @@
+{
+  "bridge_name": "HUNTER8",
+  "command_id": "titan-syfe-deep-20260812-1930",
+  "action": "deep_scan",
+  "config_path": "bugbounty_runner/config.titan-syfe-uat.json",
+  "requested_by": "chatgpt",
+  "notes": "Second-pass Syfe UAT-only deep discovery. Parse first-party HTML/JavaScript for in-scope API/auth/account/trading/payment/portfolio routes and probe only discovered allowlisted endpoints with safe GET requests. No wordlist brute force, no production automation, no state-changing methods, no response body storage, no PII/secret value collection. Any UAT candidate remains non-reportable until permitted manual production reproduction."
+}
