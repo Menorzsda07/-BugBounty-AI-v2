@@ -6,11 +6,14 @@ on:
     paths:
       - 'bugbounty_runner/titan_v_pro_core.py'
       - 'bugbounty_runner/multi_scan.py'
+      - 'bugbounty_runner/runner.py'
       - 'bugbounty_runner/analyze.py'
       - 'bugbounty_runner/brain_code_vsystem.py'
+      - 'bugbounty_runner/config*.json'
       - 'bugbounty_runner/memory/vulnerability-knowledge.json'
       - 'bugbounty_runner/memory/brain-code-vsystem.json'
       - 'bugbounty_runner/test_titan_v_pro.py'
+      - '.github/workflows/bugbounty-multi-runner.yml'
       - '.github/workflows/titan-v-pro-ci.yml'
 
 permissions:
