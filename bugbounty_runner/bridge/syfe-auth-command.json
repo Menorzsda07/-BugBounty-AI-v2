@@ -1,0 +1,8 @@
+{
+  "bridge_name": "HUNTER8",
+  "command_id": "titan-syfe-auth-map-20260812-1934",
+  "action": "auth_surface_map",
+  "config_path": "bugbounty_runner/config.titan-syfe-uat.json",
+  "requested_by": "chatgpt",
+  "notes": "Syfe UAT-only curated auth surface mapping. Probe a small explicit list of login/auth/account entrypoints with safe GET requests only. No brute force, no credentials, no state-changing methods, no production requests, no redirect following, no response-body storage, no PII or secret values."
+}
