@@ -179,6 +179,9 @@ class BrainCodeVSystem:
                 for fam in self.knowledge.get('families', []):
                     if fam.get('id') == mapped:
                         return fam
+            # Module-aware classification is authoritative in V PRO. If a module has
+            # no explicit family mapping, do not guess from generic words in its title/URL.
+            return None
         low = (text or '').lower(); scored = []
         for fam in self.knowledge.get('families', []):
             score = 0
