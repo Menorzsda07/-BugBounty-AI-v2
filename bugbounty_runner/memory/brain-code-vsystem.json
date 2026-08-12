@@ -1,57 +1,62 @@
 {
   "name": "Brain Code VSystem",
-  "version": 2,
+  "version": 3,
   "programs": {
     "polygon": {
       "hosts": {},
       "false_positives": [
-        {"fingerprint":"seed-auth-boundary-group","program":"polygon","host":"api-polygon-tokens.polygon.technology","bug_class":"auth_boundary","signal":"six previously validated unauthenticated-sensitive-response candidates","reason":"validated as false positives in TITAN candidate validation"},
-        {"fingerprint":"seed-faucet-reflection","program":"polygon","host":"faucet.polygon.technology","bug_class":"xss_reflection","signal":"q parameter reflection candidate","reason":"validated reflection only; not confirmed XSS"},
-        {"fingerprint":"seed-faucet-sqli","program":"polygon","host":"faucet.polygon.technology","bug_class":"sqli_differential","signal":"id quote differential candidate","reason":"validated false positive: no SQL error marker in baseline or mutated response"},
-        {"fingerprint":"seed-portal-server-status","program":"polygon","host":"portal.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: generic frontend fallback, same root response"},
-        {"fingerprint":"seed-staking-server-status","program":"polygon","host":"staking.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: frontend fallback without Apache server-status signature"},
-        {"fingerprint":"seed-token-server-status","program":"polygon","host":"api-polygon-tokens.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: exact same JSON response as API root"}
+        {"fingerprint":"seed-auth-boundary-group","program":"polygon","host":"api-polygon-tokens.polygon.technology","bug_class":"auth_boundary","signal":"six previously validated unauthenticated-sensitive-response candidates","reason":"validated as false positives in TITAN candidate validation","scope":"class_host"},
+        {"fingerprint":"seed-faucet-reflection","program":"polygon","host":"faucet.polygon.technology","bug_class":"xss_reflection","signal":"q parameter reflection candidate","reason":"validated reflection only; not confirmed XSS","scope":"class_host"},
+        {"fingerprint":"seed-faucet-sqli","program":"polygon","host":"faucet.polygon.technology","bug_class":"sqli_differential","signal":"id quote differential candidate","reason":"validated false positive: no SQL error marker in baseline or mutated response","scope":"class_host"},
+        {"fingerprint":"seed-portal-server-status","program":"polygon","host":"portal.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: generic frontend fallback, same root response","scope":"class_host"},
+        {"fingerprint":"seed-staking-server-status","program":"polygon","host":"staking.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: frontend fallback without Apache server-status signature","scope":"class_host"},
+        {"fingerprint":"seed-token-server-status","program":"polygon","host":"api-polygon-tokens.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: exact same JSON response as API root","scope":"class_host"}
       ],
       "validated_candidates": [],
       "confirmed_vulnerabilities": [],
-      "novel_anomalies": []
+      "novel_anomalies": [],
+      "observations": {}
     },
     "klarna": {
       "hosts": {},
       "false_positives": [
-        {"fingerprint":"seed-app-sensitive-fallback","program":"klarna","host":"app.klarna.com","bug_class":"sensitive_files","signal":"/.git/HEAD and /server-status","reason":"validated false positives: exact same frontend HTML fallback as root"},
-        {"fingerprint":"seed-playground-sensitive-fallback","program":"klarna","host":"portal.playground.klarna.com","bug_class":"sensitive_files","signal":"/.git/HEAD and /server-status","reason":"validated false positives: HTML application response with neither Git HEAD nor Apache server-status signature"}
+        {"fingerprint":"seed-app-sensitive-fallback","program":"klarna","host":"app.klarna.com","bug_class":"sensitive_files","signal":"/.git/HEAD and /server-status","reason":"validated false positives: exact same frontend HTML fallback as root","scope":"class_host"},
+        {"fingerprint":"seed-playground-sensitive-fallback","program":"klarna","host":"portal.playground.klarna.com","bug_class":"sensitive_files","signal":"/.git/HEAD and /server-status","reason":"validated false positives: HTML application response with neither Git HEAD nor Apache server-status signature","scope":"class_host"}
       ],
       "validated_candidates": [],
       "confirmed_vulnerabilities": [],
-      "novel_anomalies": []
+      "novel_anomalies": [],
+      "observations": {}
     },
     "wisdomtree": {
       "hosts": {},
       "false_positives": [
-        {"fingerprint":"5595ffbc8014c96808d04cbc","program":"wisdomtree","host":"app.wisdomtreeconnect.com","bug_class":"encoding_diff","signal":"Equivalent input encodings produce different responses | https://app.wisdomtreeconnect.com/api/","reason":"confirmed false positive by repeated low-impact validation: q=A and q=%41 were semantically identical; raw body hash variance came from dynamic telemetry applicationTime and was not correlated with encoding"}
+        {"fingerprint":"5595ffbc8014c96808d04cbc","program":"wisdomtree","host":"app.wisdomtreeconnect.com","bug_class":"encoding_diff","signal":"Equivalent input encodings produce different responses | https://app.wisdomtreeconnect.com/api/","reason":"confirmed false positive by repeated low-impact validation: q=A and q=%41 were semantically identical; raw body hash variance came from dynamic telemetry applicationTime and was not correlated with encoding","scope":"exact"}
       ],
       "validated_candidates": [],
       "confirmed_vulnerabilities": [],
-      "novel_anomalies": []
+      "novel_anomalies": [],
+      "observations": {}
     }
   },
   "global_false_positives": [
-    {"fingerprint":"seed-auth-boundary-group","program":"polygon","host":"api-polygon-tokens.polygon.technology","bug_class":"auth_boundary","signal":"six previously validated unauthenticated-sensitive-response candidates","reason":"validated as false positives in TITAN candidate validation"},
-    {"fingerprint":"seed-faucet-reflection","program":"polygon","host":"faucet.polygon.technology","bug_class":"xss_reflection","signal":"q parameter reflection candidate","reason":"validated reflection only; not confirmed XSS"},
-    {"fingerprint":"seed-faucet-sqli","program":"polygon","host":"faucet.polygon.technology","bug_class":"sqli_differential","signal":"id quote differential candidate","reason":"validated false positive: no SQL error marker in baseline or mutated response"},
-    {"fingerprint":"seed-portal-server-status","program":"polygon","host":"portal.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: generic frontend fallback, same root response"},
-    {"fingerprint":"seed-staking-server-status","program":"polygon","host":"staking.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: frontend fallback without Apache server-status signature"},
-    {"fingerprint":"seed-token-server-status","program":"polygon","host":"api-polygon-tokens.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: exact same JSON response as API root"},
-    {"fingerprint":"seed-app-sensitive-fallback","program":"klarna","host":"app.klarna.com","bug_class":"sensitive_files","signal":"/.git/HEAD and /server-status","reason":"validated false positives: exact same frontend HTML fallback as root"},
-    {"fingerprint":"seed-playground-sensitive-fallback","program":"klarna","host":"portal.playground.klarna.com","bug_class":"sensitive_files","signal":"/.git/HEAD and /server-status","reason":"validated false positives: HTML application response with neither Git HEAD nor Apache server-status signature"},
-    {"fingerprint":"5595ffbc8014c96808d04cbc","program":"wisdomtree","host":"app.wisdomtreeconnect.com","bug_class":"encoding_diff","signal":"Equivalent input encodings produce different responses | https://app.wisdomtreeconnect.com/api/","reason":"confirmed false positive by repeated low-impact validation: q=A and q=%41 were semantically identical; raw body hash variance came from dynamic telemetry applicationTime and was not correlated with encoding"}
+    {"fingerprint":"seed-auth-boundary-group","program":"polygon","host":"api-polygon-tokens.polygon.technology","bug_class":"auth_boundary","signal":"six previously validated unauthenticated-sensitive-response candidates","reason":"validated as false positives in TITAN candidate validation","scope":"class_host"},
+    {"fingerprint":"seed-faucet-reflection","program":"polygon","host":"faucet.polygon.technology","bug_class":"xss_reflection","signal":"q parameter reflection candidate","reason":"validated reflection only; not confirmed XSS","scope":"class_host"},
+    {"fingerprint":"seed-faucet-sqli","program":"polygon","host":"faucet.polygon.technology","bug_class":"sqli_differential","signal":"id quote differential candidate","reason":"validated false positive: no SQL error marker in baseline or mutated response","scope":"class_host"},
+    {"fingerprint":"seed-portal-server-status","program":"polygon","host":"portal.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: generic frontend fallback, same root response","scope":"class_host"},
+    {"fingerprint":"seed-staking-server-status","program":"polygon","host":"staking.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: frontend fallback without Apache server-status signature","scope":"class_host"},
+    {"fingerprint":"seed-token-server-status","program":"polygon","host":"api-polygon-tokens.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: exact same JSON response as API root","scope":"class_host"},
+    {"fingerprint":"seed-app-sensitive-fallback","program":"klarna","host":"app.klarna.com","bug_class":"sensitive_files","signal":"/.git/HEAD and /server-status","reason":"validated false positives: exact same frontend HTML fallback as root","scope":"class_host"},
+    {"fingerprint":"seed-playground-sensitive-fallback","program":"klarna","host":"portal.playground.klarna.com","bug_class":"sensitive_files","signal":"/.git/HEAD and /server-status","reason":"validated false positives: HTML application response with neither Git HEAD nor Apache server-status signature","scope":"class_host"},
+    {"fingerprint":"5595ffbc8014c96808d04cbc","program":"wisdomtree","host":"app.wisdomtreeconnect.com","bug_class":"encoding_diff","signal":"Equivalent input encodings produce different responses | https://app.wisdomtreeconnect.com/api/","reason":"confirmed false positive by repeated low-impact validation: q=A and q=%41 were semantically identical; raw body hash variance came from dynamic telemetry applicationTime and was not correlated with encoding","scope":"exact"}
   ],
   "confirmed_vulnerabilities": [],
   "novel_anomalies": [],
+  "observations": {},
   "history": [
     {"event":"bootstrap","note":"Initialized from validated TITAN results so known Polygon false positives are not treated as new findings again."},
     {"event":"migration_v2","note":"Added novel_anomalies support and recorded false positives from 12-runner validation."},
-    {"event":"false_positive_validation","program":"wisdomtree","host":"app.wisdomtreeconnect.com","bug_class":"encoding_diff","fingerprint":"5595ffbc8014c96808d04cbc","note":"Rigorous repeated validation showed q=A and q=%41 are semantically identical; dynamic New Relic applicationTime caused hash-only variance."}
+    {"event":"false_positive_validation","program":"wisdomtree","host":"app.wisdomtreeconnect.com","bug_class":"encoding_diff","fingerprint":"5595ffbc8014c96808d04cbc","note":"Rigorous repeated validation showed q=A and q=%41 are semantically identical; dynamic New Relic applicationTime caused hash-only variance."},
+    {"event":"migration_v3","note":"TITAN V PRO precision-memory migration: legacy seeded groups remain class_host; new WisdomTree encoding false positive is exact-fingerprint only; observations store added."}
   ]
 }
