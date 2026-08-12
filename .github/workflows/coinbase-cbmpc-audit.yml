@@ -1,0 +1,231 @@
+name: Coinbase cb-mpc Encrypted Fuzz Audit
+
+on:
+  push:
+    paths:
+      - '.github/workflows/coinbase-cbmpc-audit.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone in-scope Coinbase cb-mpc
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --recurse-submodules https://github.com/coinbase/cb-mpc.git "$RUNNER_TEMP/cb-mpc"
+
+      - name: Build Coinbase toolchain image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/cb-mpc"
+          docker build -t cbmpc-fuzz . >/dev/null
+
+      - name: Create public-API fuzz harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/cb-mpc/fuzz_public_api.cpp" <<'CPP'
+          #include <cstddef>
+          #include <cstdint>
+          #include <algorithm>
+          #include <cbmpc/core/buf.h>
+          #include <cbmpc/api/curve.h>
+          #include <cbmpc/api/ecdsa_2p.h>
+          #include <cbmpc/api/eddsa_2p.h>
+          #include <cbmpc/api/schnorr_2p.h>
+          #include <cbmpc/api/ecdsa_mp.h>
+          #include <cbmpc/api/eddsa_mp.h>
+          #include <cbmpc/api/schnorr_mp.h>
+          #include <cbmpc/api/tdh2.h>
+          #include <cbmpc/api/pve_base_pke.h>
+
+          using coinbase::mem_t;
+          using coinbase::buf_t;
+          using coinbase::api::curve_id;
+
+          static mem_t part(const uint8_t* d, size_t n, size_t off, size_t len) {
+            if (off > n) off = n;
+            len = std::min(len, n - off);
+            return mem_t(d + off, static_cast<int>(len));
+          }
+
+          extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+            if (!data || size < 5 || size > 8192) return 0;
+            const uint8_t mode = data[0];
+            const size_t body = size - 1;
+            const size_t a_len = body / 4;
+            const size_t b_len = body / 4;
+            const size_t c_len = body / 4;
+            mem_t a = part(data + 1, body, 0, a_len);
+            mem_t b = part(data + 1, body, a_len, b_len);
+            mem_t c = part(data + 1, body, a_len + b_len, c_len);
+            mem_t d = part(data + 1, body, a_len + b_len + c_len, body - a_len - b_len - c_len);
+            buf_t o1, o2;
+            curve_id curve = (mode & 1) ? curve_id::secp256k1 : curve_id::p256;
+
+            switch (mode % 16) {
+              case 0:
+                coinbase::api::ecdsa_2p::get_public_key_compressed(a, o1);
+                coinbase::api::ecdsa_2p::get_public_share_compressed(a, o2);
+                break;
+              case 1:
+                coinbase::api::ecdsa_2p::detach_private_scalar(a, o1, o2);
+                break;
+              case 2:
+                coinbase::api::ecdsa_2p::attach_private_scalar(a, b, c, o1);
+                break;
+              case 3:
+                coinbase::api::eddsa_2p::get_public_key_compressed(a, o1);
+                coinbase::api::eddsa_2p::get_public_share_compressed(a, o2);
+                coinbase::api::eddsa_2p::detach_private_scalar(a, o1, o2);
+                break;
+              case 4:
+                coinbase::api::eddsa_2p::attach_private_scalar(a, b, c, o1);
+                break;
+              case 5:
+                coinbase::api::schnorr_2p::get_public_key_compressed(a, o1);
+                coinbase::api::schnorr_2p::get_public_share_compressed(a, o2);
+                coinbase::api::schnorr_2p::detach_private_scalar(a, o1, o2);
+                break;
+              case 6:
+                coinbase::api::schnorr_2p::attach_private_scalar(a, b, c, o1);
+                break;
+              case 7:
+                coinbase::api::ecdsa_mp::get_public_key_compressed(a, o1);
+                coinbase::api::ecdsa_mp::get_public_share_compressed(a, o2);
+                coinbase::api::ecdsa_mp::detach_private_scalar(a, o1, o2);
+                break;
+              case 8:
+                coinbase::api::ecdsa_mp::attach_private_scalar(a, b, c, o1);
+                break;
+              case 9:
+                coinbase::api::eddsa_mp::get_public_key_compressed(a, o1);
+                coinbase::api::eddsa_mp::get_public_share_compressed(a, o2);
+                coinbase::api::eddsa_mp::detach_private_scalar(a, o1, o2);
+                break;
+              case 10:
+                coinbase::api::eddsa_mp::attach_private_scalar(a, b, c, o1);
+                break;
+              case 11:
+                coinbase::api::schnorr_mp::get_public_key_compressed(a, o1);
+                coinbase::api::schnorr_mp::get_public_share_compressed(a, o2);
+                coinbase::api::schnorr_mp::detach_private_scalar(a, o1, o2);
+                break;
+              case 12:
+                coinbase::api::schnorr_mp::attach_private_scalar(a, b, c, o1);
+                break;
+              case 13:
+                coinbase::api::tdh2::encrypt(a, b, c, o1);
+                coinbase::api::tdh2::verify(a, b, c);
+                coinbase::api::tdh2::partial_decrypt(a, b, c, o2);
+                break;
+              case 14:
+                coinbase::api::pve::get_public_key_compressed(a, o1);
+                coinbase::api::pve::get_Label(a, o2);
+                coinbase::api::pve::base_pke_ecies_p256_ek_from_oct(a, o1);
+                coinbase::api::pve::base_pke_rsa_ek_from_modulus(a, o2);
+                break;
+              case 15:
+                coinbase::api::pve::verify(curve, a, b, c, d);
+                coinbase::api::pve::decrypt(curve, a, b, c, d, o1);
+                break;
+            }
+            return 0;
+          }
+          CPP
+
+      - name: Build with ASAN UBSAN and libFuzzer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/cb-mpc"
+          docker run --rm -v "$PWD:/code" -t cbmpc-fuzz bash -c '
+            set -euo pipefail
+            git submodule update --init --recursive
+            cmake -B build/fuzz -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF \
+              -DCMAKE_CXX_FLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined,fuzzer-no-link -fno-sanitize=enum" \
+              -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+              -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+            cmake --build build/fuzz -- -j2
+            clang++-20 -std=c++17 -O1 -g -fno-omit-frame-pointer \
+              -fsanitize=fuzzer,address,undefined -fno-sanitize=enum \
+              -I/code/include -I/code/include-internal -I/code/src \
+              /code/fuzz_public_api.cpp /code/lib/Debug/libcbmpc.a \
+              /usr/local/opt/openssl@3.6.1/lib64/libcrypto.a -ldl -pthread \
+              -o /code/build/fuzz_public_api
+          ' > "$RUNNER_TEMP/build.log" 2>&1
+
+      - name: Run public-API fuzzing
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/cb-mpc"
+          mkdir -p "$RUNNER_TEMP/fuzz-out/corpus" "$RUNNER_TEMP/fuzz-out/artifacts"
+          docker run --rm \
+            -v "$PWD:/code" \
+            -v "$RUNNER_TEMP/fuzz-out:/fuzz-out" \
+            -t cbmpc-fuzz bash -c '
+              set +e
+              ASAN_OPTIONS=detect_leaks=0:abort_on_error=1:symbolize=1 \
+              UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+              timeout 420s /code/build/fuzz_public_api /fuzz-out/corpus \
+                -max_len=8192 -timeout=5 -rss_limit_mb=4096 \
+                -artifact_prefix=/fuzz-out/artifacts/ \
+                -print_final_stats=1 > /fuzz-out/fuzzer.log 2>&1
+              rc=$?
+              echo "$rc" > /fuzz-out/exit_code.txt
+              exit 0
+            '
+          find "$RUNNER_TEMP/fuzz-out" -maxdepth 2 -type f -printf '%P %s bytes\n' > "$RUNNER_TEMP/fuzz-out/manifest.txt"
+          git -C "$RUNNER_TEMP/cb-mpc" rev-parse HEAD > "$RUNNER_TEMP/fuzz-out/coinbase_commit.txt"
+
+      - name: Encrypt audit output
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/encrypted"
+          mkdir -p "$WORK"
+          cp "$RUNNER_TEMP/build.log" "$RUNNER_TEMP/fuzz-out/build.log"
+          cat > "$WORK/public.pem" <<'EOF'
+          -----BEGIN PUBLIC KEY-----
+          MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEApqyJ6b3bVcTJdjWxeLHG
+          6QOgVWUUSx1uHFK7jPVZKzxdyPoN/NXVARdr7D6/P7ffe+esE5bYk1EFgH5gRGUy
+          c8NXKq6Kxz5tWix/9Wjr8FxRXIzzrwR0S6il98WTc6e435gOP2r/ZSyPy05zquFz
+          Gw7s25VDSOPsZXXYb/SqpuzgIp3JsYlKSBokOCRg4vqcxLRLeIIAihewA20rIMkM
+          eBrLkfkEpYa63+MyyIf3diljaj8+2qZOhPsTxORqy9DBq+kBqNiXTAhXXf6uIY1x
+          rlq8ZMMKkt3+dyQ4LQeGosTD9tBqCOvwPurWswXU/PBJ3m277ADLdeeZl+NIs70r
+          BuKLZBo0+Ze0F7gQ+CVgXf43rnHMdoMhqhLBm8/tL75pYErKZg5ZSWiQ3PMt+gy/
+          6Ezg7QMXp49/RTB0LcLJ3cITBxnsitvzYhjK6k+5GRqLqlHtjWGpfkZPf3dzylcu
+          UlRlpkgUfMxgLdWUlF4ebgN07GtBIamJ4Lci8ieGN+SvAgMBAAE=
+          -----END PUBLIC KEY-----
+          EOF
+          tar -C "$RUNNER_TEMP" -czf "$WORK/results.tar.gz" fuzz-out
+          openssl rand -out "$WORK/aes.key" 32
+          openssl rand -out "$WORK/aes.iv" 16
+          openssl enc -aes-256-cbc \
+            -K "$(xxd -p -c 256 "$WORK/aes.key")" \
+            -iv "$(xxd -p -c 256 "$WORK/aes.iv")" \
+            -in "$WORK/results.tar.gz" -out "$WORK/results.enc"
+          cat "$WORK/aes.key" "$WORK/aes.iv" > "$WORK/keymaterial.bin"
+          openssl pkeyutl -encrypt -pubin -inkey "$WORK/public.pem" \
+            -pkeyopt rsa_padding_mode:oaep \
+            -in "$WORK/keymaterial.bin" -out "$WORK/keymaterial.enc"
+          rm -f "$WORK/aes.key" "$WORK/aes.iv" "$WORK/keymaterial.bin" "$WORK/results.tar.gz" "$WORK/public.pem"
+
+      - name: Upload encrypted results
+        uses: actions/upload-artifact@v4
+        with:
+          name: coinbase-cbmpc-encrypted-audit
+          path: |
+            ${{ runner.temp }}/encrypted/results.enc
+            ${{ runner.temp }}/encrypted/keymaterial.enc
+          retention-days: 1
+          compression-level: 0
