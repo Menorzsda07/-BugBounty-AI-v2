@@ -1,8 +1,8 @@
 {
   "bridge_name": "HUNTER8",
-  "command_id": "titan-discovery-restart-20260812-1900",
+  "command_id": "titan-12runner-live-20260812-1616",
   "action": "scan",
   "config_path": "bugbounty_runner/config.titan-active.json",
   "requested_by": "chatgpt",
-  "notes": "Restart discovery on the reviewed authorized HackerOne scope after Polygon candidate validation. Continue low-impact surface, JS route, auth-boundary, CORS, redirect, cache, reflection and differential checks; credential-required flows, DoS and disruptive behavior remain excluded."
+  "notes": "Launch all 12 low-impact runners on the currently reviewed Klarna and Polygon HackerOne assets. Brain Code VSystem enabled; credential-required flows, DoS and disruptive behavior excluded."
 }
