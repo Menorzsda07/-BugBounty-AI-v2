@@ -1,0 +1,8 @@
+{
+  "bridge_name": "HUNTER8",
+  "command_id": "bootstrap-001",
+  "action": "scan",
+  "config_path": "bugbounty_runner/config.example.json",
+  "requested_by": "chatgpt",
+  "notes": "ChatGPT updates this reviewed command file after the user supplies an authorized HackerOne scope. A change to command_id triggers the 8-runner workflow."
+}
