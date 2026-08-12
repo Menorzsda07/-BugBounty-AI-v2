@@ -1,15 +1,28 @@
 {
-  "program": "example-hackerone-program",
-  "targets": [
-    "https://example.com"
+  "programs": [
+    {
+      "name": "klarna",
+      "targets": [
+        "https://portal.playground.klarna.com",
+        "https://app.klarna.com"
+      ],
+      "exclude_paths": [],
+      "notes": "Only explicitly eligible HackerOne assets."
+    },
+    {
+      "name": "freshworks-example",
+      "targets": [
+        "https://your-owned-tenant.freshdesk.com"
+      ],
+      "exclude_paths": [
+        "/crm/"
+      ],
+      "notes": "Use only a tenant owned by the researcher."
+    }
   ],
-  "exclude_paths": [
-    "/logout",
-    "/delete",
-    "/admin/destructive"
-  ],
-  "max_requests_per_runner": 40,
-  "delay_ms": 750,
+  "max_requests_per_target_per_runner": 30,
+  "delay_ms": 900,
+  "runner_count": 8,
   "enabled_modules": [
     "surface",
     "js_routes",
@@ -21,5 +34,5 @@
     "sqli_differential"
   ],
   "aggressive_modules": [],
-  "notes": "Only put explicitly authorized HackerOne assets here. Enable aggressive modules only when the program rules explicitly permit them."
+  "notes": "Every target must be explicitly authorized and bounty-eligible. Aggressive modules stay disabled unless that program explicitly permits them."
 }
