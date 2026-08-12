@@ -1,0 +1,45 @@
+name: Syfe low-impact recon
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/syfe-low-impact-recon.yml'
+jobs:
+  recon:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Low impact checks
+        shell: bash
+        run: |
+          set -u
+          mkdir -p out
+          targets=(
+            'https://uat-bugbounty.nonprod.syfe.com'
+            'https://api-uat-bugbounty.nonprod.syfe.com'
+            'https://www.syfe.com'
+            'https://api.syfe.com'
+            'https://alfred.syfe.com'
+            'https://mark8.syfe.com'
+            'https://alfred-uat-31.nonprod.syfe.com'
+          )
+          : > out/results.txt
+          for u in "${targets[@]}"; do
+            echo "===== $u =====" >> out/results.txt
+            curl -sS --max-time 12 -D - -o /tmp/body -A 'Mozilla/5.0 security-research-low-volume' "$u/" >> out/results.txt 2>&1 || true
+            echo "BODY_SHA256 $(sha256sum /tmp/body 2>/dev/null | cut -d' ' -f1)" >> out/results.txt
+            echo "BODY_SIZE $(wc -c </tmp/body 2>/dev/null || echo 0)" >> out/results.txt
+            for p in robots.txt .well-known/security.txt; do
+              echo "--- /$p" >> out/results.txt
+              curl -sS --max-time 10 -D - -o /tmp/body2 -A 'Mozilla/5.0 security-research-low-volume' "$u/$p" >> out/results.txt 2>&1 || true
+              head -c 2000 /tmp/body2 >> out/results.txt 2>/dev/null || true
+              echo >> out/results.txt
+            done
+            echo >> out/results.txt
+            sleep 1
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: syfe-low-impact-results
+          path: out/results.txt
+          retention-days: 1
