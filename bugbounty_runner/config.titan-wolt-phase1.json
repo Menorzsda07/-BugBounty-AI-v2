@@ -1,0 +1,66 @@
+{
+  "titan_profile": "V PRO 1.0 - WOLT PHASE 1",
+  "authorized_scope_reviewed": true,
+  "programs": [
+    {
+      "name": "wolt",
+      "targets": [
+        "https://wolt.com",
+        "https://restaurant-api.wolt.com",
+        "https://authentication.wolt.com"
+      ],
+      "exclude_paths": [],
+      "excluded_hosts": [],
+      "notes": "Wolt HackerOne Tier-1 Phase 1. Public/unauthenticated low-impact testing only. Never access accounts or data not owned by the researcher. Do not test payment processors, Customer Support, brute force, DoS/DDoS, or mass-create entities."
+    }
+  ],
+  "request_headers": {
+    "X-HackerOne-Research": "ghosther"
+  },
+  "max_requests_per_target_per_runner": 12,
+  "delay_ms": 1500,
+  "runner_count": 12,
+  "evidence_policy": {
+    "store_response_bodies": false,
+    "store_secret_values": false,
+    "store_auth_material": false,
+    "store_pii_values": false
+  },
+  "scope_policy": {
+    "discovered_urls_must_be_allowlisted": true,
+    "follow_redirects": false,
+    "third_party_fetches": false
+  },
+  "program_constraints": {
+    "research_header_required": true,
+    "research_header_value": "X-HackerOne-Research: ghosther",
+    "researcher_owned_accounts_only": true,
+    "test_consumer_user_id": "670fa3e9ead6e49d65cc3614",
+    "test_venue_id": "670e7897e3c56dcc5b5a0989",
+    "payment_processors_out_of_scope": true,
+    "customer_support_interaction_forbidden": true,
+    "bruteforce_forbidden": true,
+    "dos_forbidden": true,
+    "mass_entity_creation_forbidden": true
+  },
+  "enabled_modules": [
+    "surface",
+    "js_routes",
+    "api_hints",
+    "sourcemaps",
+    "auth_boundary",
+    "redirects",
+    "xss_reflection",
+    "sqli_differential",
+    "openapi_graphql",
+    "status_anomaly",
+    "content_type_diff",
+    "path_normalization_diff",
+    "encoding_diff",
+    "header_behavior_diff",
+    "method_consistency",
+    "response_shape_diff"
+  ],
+  "aggressive_modules": [],
+  "notes": "Phase 1 intentionally excludes missing headers/cookie flags, CORS without impact, rate-limit/bruteforce, fingerprinting/banner checks, DNS inventory, cache DoS/poisoning and generic verbose-error disclosure because these are out of scope or low-value under Wolt policy. No credentials are used in this phase."
+}
