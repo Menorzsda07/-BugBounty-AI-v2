@@ -13,7 +13,7 @@ permissions:
 jobs:
   recon:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
 
@@ -25,20 +25,11 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: 31538290212
 
-      - name: Download templates/fixes
-        uses: actions/download-artifact@v4
-        with:
-          name: cyber-fixes-linux-amd64
-          path: ${{ runner.temp }}/fixes-artifact
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: 31539250787
-
       - name: Prepare toolkit
         shell: bash
         run: |
           set -euo pipefail
           tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/toolkit-artifact/cyber-toolkit-linux-amd64.tar.gz"
-          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/fixes-artifact/cyber-fixes-linux-amd64.tar.gz"
           chmod +x "$RUNNER_TEMP/cyber-toolkit/bin/"* || true
 
       - name: Run scoped low-rate UAT reconnaissance
@@ -69,18 +60,14 @@ jobs:
             -timeout 8 -retry 0 -jc -kf all -fs fqdn -o "$OUT/katana.txt" >/dev/null 2>&1 || true
 
           grep -E '(^|[?&])[^=]+=|/api/|/v[0-9]+/' "$OUT/katana.txt" 2>/dev/null | sort -u > "$OUT/candidate-urls.txt" || true
-
-          nuclei -l "$OUT/targets.txt" -t "$RUNNER_TEMP/cyber-fixes/nuclei-templates" -silent \
-            -severity high,critical \
-            -exclude-tags dos,fuzz,intrusive,bruteforce,credential-stuffing,token-spray \
-            -rl 2 -c 1 -bs 1 -timeout 8 -retries 0 -jsonl -o "$OUT/nuclei.jsonl" >/dev/null 2>&1 || true
+          grep -E '\.js([?#].*)?$' "$OUT/katana.txt" 2>/dev/null | sort -u > "$OUT/javascript-urls.txt" || true
 
           {
             echo "completed_utc=$(date -u +%FT%TZ)"
             echo "targets=3"
             echo "katana_urls=$(wc -l < "$OUT/katana.txt" 2>/dev/null || echo 0)"
             echo "candidate_urls=$(wc -l < "$OUT/candidate-urls.txt" 2>/dev/null || echo 0)"
-            echo "nuclei_findings=$(wc -l < "$OUT/nuclei.jsonl" 2>/dev/null || echo 0)"
+            echo "javascript_urls=$(wc -l < "$OUT/javascript-urls.txt" 2>/dev/null || echo 0)"
           } > "$OUT/manifest.txt"
 
       - name: Encrypt results before artifact upload
@@ -117,7 +104,7 @@ jobs:
       - name: Upload encrypted artifact
         uses: actions/upload-artifact@v4
         with:
-          name: syfe-uat-encrypted-results
+          name: syfe-uat-encrypted-results-fast
           path: |
             ${{ runner.temp }}/encrypted/results.enc
             ${{ runner.temp }}/encrypted/keymaterial.enc
