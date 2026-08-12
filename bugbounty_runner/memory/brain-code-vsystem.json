@@ -1,0 +1,54 @@
+{
+  "name": "Brain Code VSystem",
+  "version": 1,
+  "programs": {
+    "polygon": {
+      "hosts": {},
+      "false_positives": [
+        {
+          "fingerprint": "seed-auth-boundary-group",
+          "program": "polygon",
+          "host": "api-polygon-tokens.polygon.technology",
+          "bug_class": "auth_boundary",
+          "signal": "six previously validated unauthenticated-sensitive-response candidates",
+          "reason": "validated as false positives in TITAN candidate validation"
+        },
+        {
+          "fingerprint": "seed-faucet-reflection",
+          "program": "polygon",
+          "host": "faucet.polygon.technology",
+          "bug_class": "xss_reflection",
+          "signal": "q parameter reflection candidate",
+          "reason": "reflection_only_not_confirmed_xss after context validation"
+        }
+      ],
+      "validated_candidates": [],
+      "confirmed_vulnerabilities": []
+    }
+  },
+  "global_false_positives": [
+    {
+      "fingerprint": "seed-auth-boundary-group",
+      "program": "polygon",
+      "host": "api-polygon-tokens.polygon.technology",
+      "bug_class": "auth_boundary",
+      "signal": "six previously validated unauthenticated-sensitive-response candidates",
+      "reason": "validated as false positives in TITAN candidate validation"
+    },
+    {
+      "fingerprint": "seed-faucet-reflection",
+      "program": "polygon",
+      "host": "faucet.polygon.technology",
+      "bug_class": "xss_reflection",
+      "signal": "q parameter reflection candidate",
+      "reason": "reflection_only_not_confirmed_xss after context validation"
+    }
+  ],
+  "confirmed_vulnerabilities": [],
+  "history": [
+    {
+      "event": "bootstrap",
+      "note": "Initialized from validated TITAN results so known Polygon false positives are not treated as new findings again."
+    }
+  ]
+}
