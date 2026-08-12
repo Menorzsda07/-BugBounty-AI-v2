@@ -1,0 +1,25 @@
+{
+  "program": "example-hackerone-program",
+  "targets": [
+    "https://example.com"
+  ],
+  "exclude_paths": [
+    "/logout",
+    "/delete",
+    "/admin/destructive"
+  ],
+  "max_requests_per_runner": 40,
+  "delay_ms": 750,
+  "enabled_modules": [
+    "surface",
+    "js_routes",
+    "auth_boundary",
+    "cors",
+    "redirects",
+    "cache",
+    "xss_reflection",
+    "sqli_differential"
+  ],
+  "aggressive_modules": [],
+  "notes": "Only put explicitly authorized HackerOne assets here. Enable aggressive modules only when the program rules explicitly permit them."
+}
