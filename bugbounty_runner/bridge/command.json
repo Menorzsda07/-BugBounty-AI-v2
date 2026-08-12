@@ -1,8 +1,8 @@
 {
   "bridge_name": "HUNTER8",
-  "command_id": "titan-vpro-wisdomtree-20260812-1820",
+  "command_id": "titan-vpro-syfe-uat-20260812-1924",
   "action": "scan",
-  "config_path": "bugbounty_runner/config.titan-wisdomtree.json",
+  "config_path": "bugbounty_runner/config.titan-syfe-uat.json",
   "requested_by": "chatgpt",
-  "notes": "Run TITAN V PRO 1.0 with all 12 low-impact runners on WisdomTree only. Use the exact reviewed HackerOne web/API scope in config.titan-wisdomtree.json. ScopeGuard must block all non-allowlisted discovered URLs and excluded hosts. No credential-required flows, data modification, privilege escalation, PII/auth/bank data collection, destructive behavior, service degradation, or access beyond minimum necessary proof. Brain Code VSystem v3, semantic differential controls, evidence redaction and per-action reporting enabled."
+  "notes": "Run TITAN V PRO 1.0 on Syfe UAT-only authorized assets from the supplied HackerOne scope CSV. Production hosts are explicitly excluded from automation. Use low-impact unauthenticated discovery only because test credentials are not available in this conversation. No brute force, DoS, social engineering, data modification, privacy violations, spamming, service degradation, credential attacks, or automated production testing. UAT-only information disclosure and other program-declared non-qualifying classes should not be promoted to report candidates."
 }
