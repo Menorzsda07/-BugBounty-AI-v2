@@ -1,0 +1,9 @@
+{
+  "bridge_name": "HUNTER8",
+  "command_id": "titan-vpro-wolt-reflection-validate-20260812-2021",
+  "action": "validate",
+  "target": "https://merchant.wolt.com/",
+  "candidate": "xss_reflection",
+  "requested_by": "chatgpt",
+  "notes": "Use only two non-executing reflection-context probes with X-HackerOne-Research: ghosther. No JavaScript execution, no auth, no state changes, no data access."
+}
