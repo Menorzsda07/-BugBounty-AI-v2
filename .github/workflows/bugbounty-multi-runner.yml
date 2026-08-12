@@ -1,0 +1,68 @@
+name: BugBounty AI Multi-Runner
+on:
+  workflow_dispatch:
+    inputs:
+      config_path:
+        description: 'Path to a reviewed scope config JSON'
+        required: true
+        default: 'bugbounty_runner/config.example.json'
+permissions:
+  contents: read
+jobs:
+  scan:
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        module:
+          - surface
+          - js_routes
+          - auth_boundary
+          - cors
+          - redirects
+          - cache
+          - xss_reflection
+          - sqli_differential
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install runtime
+        run: pip install requests
+      - name: Run ${{ matrix.module }} runner
+        run: |
+          mkdir -p results
+          python bugbounty_runner/runner.py \
+            --config '${{ inputs.config_path }}' \
+            --module '${{ matrix.module }}' \
+            --out 'results/${{ matrix.module }}.json'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-${{ matrix.module }}
+          path: results/${{ matrix.module }}.json
+          retention-days: 2
+
+  analyze:
+    needs: scan
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: result-*
+          path: collected
+          merge-multiple: true
+      - name: Aggregate candidates
+        run: |
+          mkdir -p results
+          cp collected/*.json results/ 2>/dev/null || true
+          python bugbounty_runner/analyze.py | tee results/summary.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: combined-analysis
+          path: results/
+          retention-days: 2
