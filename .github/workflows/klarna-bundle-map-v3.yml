@@ -1,0 +1,43 @@
+name: Klarna scoped bundle map v3
+on:
+  push:
+    paths: ['.github/workflows/klarna-bundle-map-v3.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  map:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch public portal and map client routes
+        shell: bash
+        run: |
+          set -u
+          mkdir -p out js
+          UA='Mozilla/5.0 security-research-low-volume'
+          BASE='https://portal.playground.klarna.com'
+          curl -sS -L --max-time 20 -A "$UA" "$BASE/" -o out/index.html
+          grep -Eo 'https://x\.klarnacdn\.net/[^"<> ]+\.js' out/index.html | sort -u > out/js_urls.txt || true
+          while IFS= read -r u; do
+            [ -z "$u" ] && continue
+            f="js/$(basename "${u%%\?*}")"
+            curl -sS -L --max-time 25 -A "$UA" "$u" -o "$f" || true
+            sleep 1
+          done < out/js_urls.txt
+          : > out/hosts.txt
+          : > out/routes.txt
+          grep -RhoE 'https://[A-Za-z0-9._-]+\.(klarna\.com|klarna\.net|klarnacdn\.net)(/[A-Za-z0-9_./?=&%:-]*)?' js out/index.html 2>/dev/null | sed 's/["'"'<>),;].*$//' | sort -u | head -500 > out/hosts.txt || true
+          grep -RhoE '[/][A-Za-z0-9._~!$&()*+,;=:@%?-]+([/][A-Za-z0-9._~!$&()*+,;=:@%?-]+){1,8}' js 2>/dev/null | grep -Ei '(api|merchant|user|account|credential|order|payment|settlement|dispute|login|auth|session|organization|store|transaction)' | sort -u | head -1000 > out/routes.txt || true
+          echo '=== JS URLS ===' > out/summary.txt
+          cat out/js_urls.txt >> out/summary.txt
+          echo '=== KLARNA HOSTS/URLS ===' >> out/summary.txt
+          cat out/hosts.txt >> out/summary.txt
+          echo '=== ROUTE CANDIDATES ===' >> out/summary.txt
+          cat out/routes.txt >> out/summary.txt
+          echo "JS_COUNT $(find js -type f | wc -l)" >> out/summary.txt
+          echo "ROUTE_COUNT $(wc -l < out/routes.txt)" >> out/summary.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: klarna-bundle-map-v3-results
+          path: out/
+          retention-days: 1
