@@ -1,0 +1,78 @@
+{
+  "titan_profile": "V PRO 1.0",
+  "programs": [
+    {
+      "name": "syfe",
+      "targets": [
+        "https://uat-bugbounty.nonprod.syfe.com",
+        "https://api-uat-bugbounty.nonprod.syfe.com",
+        "https://alfred-uat-31.nonprod.syfe.com"
+      ],
+      "exclude_paths": [],
+      "excluded_hosts": [
+        "www.syfe.com",
+        "api.syfe.com",
+        "alfred.syfe.com",
+        "mark8.syfe.com",
+        "help.syfe.com"
+      ],
+      "production_validation_targets": [
+        "https://www.syfe.com",
+        "https://api.syfe.com",
+        "https://alfred.syfe.com",
+        "https://mark8.syfe.com"
+      ],
+      "notes": "Syfe HackerOne UAT-only automated profile. Production assets are explicitly excluded from automated requests because the program disqualifies automated attack techniques on production. Findings from UAT must later be reproducible on production to be bounty-eligible. Only researcher-owned accounts may be used. No data modification, privacy violations, DoS, social engineering, brute force, spamming, or service degradation."
+    }
+  ],
+  "max_requests_per_target_per_runner": 20,
+  "delay_ms": 1200,
+  "runner_count": 12,
+  "evidence_policy": {
+    "store_response_bodies": false,
+    "store_secret_values": false,
+    "store_auth_material": false,
+    "store_pii_values": false
+  },
+  "scope_policy": {
+    "discovered_urls_must_be_allowlisted": true,
+    "follow_redirects": false,
+    "third_party_fetches": false,
+    "production_automation": false,
+    "production_validation_requires_manual_review": true
+  },
+  "program_constraints": {
+    "uat_findings_require_production_reproduction": true,
+    "uat_information_disclosure_nonqualifying": true,
+    "production_automation_prohibited": true,
+    "production_research_header_required": "X-HackerOne-Research: [H1 username]",
+    "production_signup_email_requirement": "@wearehackerone.com",
+    "unscoped_subdomains_require_program_approval_before_submission": true
+  },
+  "enabled_modules": [
+    "surface",
+    "well_known",
+    "js_routes",
+    "api_hints",
+    "sourcemaps",
+    "auth_boundary",
+    "method_diff",
+    "cors",
+    "cache",
+    "redirects",
+    "xss_reflection",
+    "sqli_differential",
+    "error_diff",
+    "openapi_graphql",
+    "status_anomaly",
+    "content_type_diff",
+    "path_normalization_diff",
+    "encoding_diff",
+    "header_behavior_diff",
+    "method_consistency",
+    "response_shape_diff",
+    "cache_variance"
+  ],
+  "aggressive_modules": [],
+  "notes": "TITAN V PRO Syfe UAT-only campaign. Low-impact unauthenticated discovery first. Missing test credentials limit account/authenticated coverage. Non-qualifying UAT-only information disclosure, missing best-practices, rate-limit/bruteforce, and fingerprint-only modules are intentionally excluded. Open redirect and CORS signals require additional impact before they can be treated as report candidates."
+}
