@@ -1,54 +1,46 @@
 {
   "name": "Brain Code VSystem",
-  "version": 1,
+  "version": 2,
   "programs": {
     "polygon": {
       "hosts": {},
       "false_positives": [
-        {
-          "fingerprint": "seed-auth-boundary-group",
-          "program": "polygon",
-          "host": "api-polygon-tokens.polygon.technology",
-          "bug_class": "auth_boundary",
-          "signal": "six previously validated unauthenticated-sensitive-response candidates",
-          "reason": "validated as false positives in TITAN candidate validation"
-        },
-        {
-          "fingerprint": "seed-faucet-reflection",
-          "program": "polygon",
-          "host": "faucet.polygon.technology",
-          "bug_class": "xss_reflection",
-          "signal": "q parameter reflection candidate",
-          "reason": "reflection_only_not_confirmed_xss after context validation"
-        }
+        {"fingerprint":"seed-auth-boundary-group","program":"polygon","host":"api-polygon-tokens.polygon.technology","bug_class":"auth_boundary","signal":"six previously validated unauthenticated-sensitive-response candidates","reason":"validated as false positives in TITAN candidate validation"},
+        {"fingerprint":"seed-faucet-reflection","program":"polygon","host":"faucet.polygon.technology","bug_class":"xss_reflection","signal":"q parameter reflection candidate","reason":"validated reflection only; not confirmed XSS"},
+        {"fingerprint":"seed-faucet-sqli","program":"polygon","host":"faucet.polygon.technology","bug_class":"sqli_differential","signal":"id quote differential candidate","reason":"validated false positive: no SQL error marker in baseline or mutated response"},
+        {"fingerprint":"seed-portal-server-status","program":"polygon","host":"portal.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: generic frontend fallback, same root response"},
+        {"fingerprint":"seed-staking-server-status","program":"polygon","host":"staking.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: frontend fallback without Apache server-status signature"},
+        {"fingerprint":"seed-token-server-status","program":"polygon","host":"api-polygon-tokens.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: exact same JSON response as API root"}
       ],
       "validated_candidates": [],
-      "confirmed_vulnerabilities": []
+      "confirmed_vulnerabilities": [],
+      "novel_anomalies": []
+    },
+    "klarna": {
+      "hosts": {},
+      "false_positives": [
+        {"fingerprint":"seed-app-sensitive-fallback","program":"klarna","host":"app.klarna.com","bug_class":"sensitive_files","signal":"/.git/HEAD and /server-status","reason":"validated false positives: exact same frontend HTML fallback as root"},
+        {"fingerprint":"seed-playground-sensitive-fallback","program":"klarna","host":"portal.playground.klarna.com","bug_class":"sensitive_files","signal":"/.git/HEAD and /server-status","reason":"validated false positives: HTML application response with neither Git HEAD nor Apache server-status signature"}
+      ],
+      "validated_candidates": [],
+      "confirmed_vulnerabilities": [],
+      "novel_anomalies": []
     }
   },
   "global_false_positives": [
-    {
-      "fingerprint": "seed-auth-boundary-group",
-      "program": "polygon",
-      "host": "api-polygon-tokens.polygon.technology",
-      "bug_class": "auth_boundary",
-      "signal": "six previously validated unauthenticated-sensitive-response candidates",
-      "reason": "validated as false positives in TITAN candidate validation"
-    },
-    {
-      "fingerprint": "seed-faucet-reflection",
-      "program": "polygon",
-      "host": "faucet.polygon.technology",
-      "bug_class": "xss_reflection",
-      "signal": "q parameter reflection candidate",
-      "reason": "reflection_only_not_confirmed_xss after context validation"
-    }
+    {"fingerprint":"seed-auth-boundary-group","program":"polygon","host":"api-polygon-tokens.polygon.technology","bug_class":"auth_boundary","signal":"six previously validated unauthenticated-sensitive-response candidates","reason":"validated as false positives in TITAN candidate validation"},
+    {"fingerprint":"seed-faucet-reflection","program":"polygon","host":"faucet.polygon.technology","bug_class":"xss_reflection","signal":"q parameter reflection candidate","reason":"validated reflection only; not confirmed XSS"},
+    {"fingerprint":"seed-faucet-sqli","program":"polygon","host":"faucet.polygon.technology","bug_class":"sqli_differential","signal":"id quote differential candidate","reason":"validated false positive: no SQL error marker in baseline or mutated response"},
+    {"fingerprint":"seed-portal-server-status","program":"polygon","host":"portal.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: generic frontend fallback, same root response"},
+    {"fingerprint":"seed-staking-server-status","program":"polygon","host":"staking.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: frontend fallback without Apache server-status signature"},
+    {"fingerprint":"seed-token-server-status","program":"polygon","host":"api-polygon-tokens.polygon.technology","bug_class":"sensitive_files","signal":"/server-status","reason":"validated false positive: exact same JSON response as API root"},
+    {"fingerprint":"seed-app-sensitive-fallback","program":"klarna","host":"app.klarna.com","bug_class":"sensitive_files","signal":"/.git/HEAD and /server-status","reason":"validated false positives: exact same frontend HTML fallback as root"},
+    {"fingerprint":"seed-playground-sensitive-fallback","program":"klarna","host":"portal.playground.klarna.com","bug_class":"sensitive_files","signal":"/.git/HEAD and /server-status","reason":"validated false positives: HTML application response with neither Git HEAD nor Apache server-status signature"}
   ],
   "confirmed_vulnerabilities": [],
+  "novel_anomalies": [],
   "history": [
-    {
-      "event": "bootstrap",
-      "note": "Initialized from validated TITAN results so known Polygon false positives are not treated as new findings again."
-    }
+    {"event":"bootstrap","note":"Initialized from validated TITAN results so known Polygon false positives are not treated as new findings again."},
+    {"event":"migration_v2","note":"Added novel_anomalies support and recorded false positives from 12-runner validation."}
   ]
 }
