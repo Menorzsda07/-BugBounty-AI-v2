@@ -11,61 +11,81 @@ jobs:
       - name: Expanded passive and low-impact mapping
         shell: bash
         run: |
-          set -u
+          set +e
           mkdir -p out js
           UA='Mozilla/5.0 security-research-low-volume'
           BASE='https://portal.playground.klarna.com'
           : > out/results.txt
           echo '[1/7] Baseline scoped assets' | tee -a out/results.txt
           for u in 'https://portal.playground.klarna.com/' 'https://app.klarna.com/'; do
-            curl -sS -L --max-redirs 3 --max-time 20 -A "$UA" -D /tmp/h "$u" -o /tmp/b || true
+            : >/tmp/h; : >/tmp/b
+            curl -sS -L --max-redirs 3 --max-time 20 -A "$UA" -D /tmp/h "$u" -o /tmp/b
             echo "$(head -1 /tmp/h | tr -d '\r') bytes=$(wc -c </tmp/b) $u" | tee -a out/results.txt
           done
           echo '[2/7] Portal HTML and JS bundles' | tee -a out/results.txt
-          curl -sS -L --max-time 20 -A "$UA" "$BASE/" -o out/index.html || true
+          curl -sS -L --max-time 20 -A "$UA" "$BASE/" -o out/index.html
           python3 - <<'PY'
           import re,urllib.parse
           s=open('out/index.html',errors='ignore').read()
           vals=set(re.findall(r'''(?:src|href)=["']([^"']+\.js(?:\?[^"']*)?)["']''',s,re.I))
-          with open('out/js_urls.txt','w') as f:
-            for x in sorted(vals): f.write(urllib.parse.urljoin('https://portal.playground.klarna.com/',x)+'\n')
+          open('out/js_urls.txt','w').write('\n'.join(sorted(urllib.parse.urljoin('https://portal.playground.klarna.com/',x) for x in vals)))
           PY
-          head -60 out/js_urls.txt | while read -r u; do
+          sed -n '1,60p' out/js_urls.txt > out/js_selected.txt
+          while IFS= read -r u; do
             [ -z "$u" ] && continue
             f="js/$(echo "$u"|sha256sum|cut -c1-20).js"
-            echo "bundle $u" | tee -a out/results.txt
-            curl -sS -L --max-time 25 -A "$UA" "$u" -o "$f" || true
+            echo "→ bundle $u" | tee -a out/results.txt
+            curl -sS -L --max-time 25 -A "$UA" "$u" -o "$f"
             sleep 1
-          done
+          done < out/js_selected.txt
           echo '[3/7] Parse minified JavaScript' | tee -a out/results.txt
           python3 - <<'PY'
-          import glob,re,json
+          import glob,re
           text='\n'.join(open(p,errors='ignore').read() for p in glob.glob('js/*.js'))
-          hosts=sorted(set(re.findall(r'https?://[A-Za-z0-9._-]+\.(?:klarna\.com|klarna\.net|klarnacdn\.net|pricerunner\.com)(?:[^"\'<>\\ ]*)?',text)))
+          urls=sorted(set(re.findall(r'https?://[A-Za-z0-9._-]+\.(?:klarna\.com|klarna\.net|klarnacdn\.net|pricerunner\.com)(?:[^"\'<>\\ ]*)?',text)))
           strings=re.findall(r'["\']([^"\']{2,240})["\']',text)
           keys=('api','account','merchant','credential','payment','order','settlement','auth','session','organization','dispute','user','invoice','refund','checkout','login','token')
           routes=sorted(set(x for x in strings if x.startswith('/') and any(k in x.lower() for k in keys) and len(x)<240))
-          open('out/urls.txt','w').write('\n'.join(hosts))
+          open('out/urls.txt','w').write('\n'.join(urls))
           open('out/routes.txt','w').write('\n'.join(routes))
-          print('hosts',len(hosts),'routes',len(routes))
+          print(f'✓ urls={len(urls)} routes={len(routes)}')
           PY
-          cat out/urls.txt out/routes.txt >> out/results.txt
-          echo '[4/7] Source-map references only' | tee -a out/results.txt
-          grep -rhoE 'sourceMappingURL=[^[:space:]]+' js 2>/dev/null | sort -u | head -100 | tee out/sourcemaps.txt >> out/results.txt || true
-          echo '[5/7] Public configuration/secrets pattern review' | tee -a out/results.txt
-          grep -rhoEi '(api[_-]?key|client[_-]?id|issuer|oauth|openid|graphql|base[_-]?url)["'"']?[[:space:]]*[:=][[:space:]]*["'"'][^"'"']{3,180}' js 2>/dev/null | head -200 > out/config_candidates.txt || true
+          echo '--- ROUTES ---' >> out/results.txt
+          cat out/routes.txt >> out/results.txt
+          echo '[4/7] Source-map references' | tee -a out/results.txt
+          grep -rhoE 'sourceMappingURL=[^[:space:]]+' js 2>/dev/null | sort -u > out/sourcemaps.txt
+          cat out/sourcemaps.txt >> out/results.txt
+          echo '[5/7] Public configuration candidates' | tee -a out/results.txt
+          grep -rhoEi '(api[_-]?key|client[_-]?id|issuer|oauth|openid|graphql|base[_-]?url)["'"']?[[:space:]]*[:=][[:space:]]*["'"'][^"'"']{3,180}' js 2>/dev/null | sed -n '1,200p' > out/config_candidates.txt
           cat out/config_candidates.txt >> out/results.txt
-          echo '[6/7] Low-volume unauthenticated checks for explicit scoped URLs found in bundles' | tee -a out/results.txt
-          grep -E '^https://[^/]+\.(klarna\.com|klarna\.net|pricerunner\.com)/' out/urls.txt | head -40 | while read -r u; do
-            code=$(curl -sS -o /tmp/body -w '%{http_code}' --max-time 12 -A "$UA" "$u" || true)
-            size=$(wc -c </tmp/body 2>/dev/null || echo 0)
-            echo "$code $size $u" | tee -a out/results.txt
+          echo '[6/7] Filter and low-volume checks' | tee -a out/results.txt
+          python3 - <<'PY'
+          import urllib.parse
+          good=[]
+          for line in open('out/urls.txt',errors='ignore'):
+            u=line.strip()
+            try:
+              p=urllib.parse.urlsplit(u)
+              h=p.hostname or ''
+              if h.endswith(('.klarna.com','.klarna.net','.pricerunner.com')) and '${' not in u and '{' not in u and '}' not in u and '#' not in u:
+                good.append(u)
+            except: pass
+          open('out/check_urls.txt','w').write('\n'.join(good[:40]))
+          PY
+          while IFS= read -r u; do
+            [ -z "$u" ] && continue
+            : >/tmp/body
+            code=$(curl -sS -o /tmp/body -w '%{http_code}' --max-time 10 -A "$UA" "$u")
+            size=$(wc -c </tmp/body)
+            echo "→ $code bytes=$size $u" | tee -a out/results.txt
             sleep 1
-          done
+          done < out/check_urls.txt
           echo '[7/7] Summary' | tee -a out/results.txt
-          echo "bundles=$(find js -type f | wc -l) urls=$(wc -l <out/urls.txt) routes=$(wc -l <out/routes.txt) config_candidates=$(wc -l <out/config_candidates.txt)" | tee -a out/results.txt
-      - uses: actions/upload-artifact@v4
+          echo "✓ bundles=$(find js -type f | wc -l) urls=$(wc -l <out/urls.txt) routes=$(wc -l <out/routes.txt) maps=$(wc -l <out/sourcemaps.txt) configs=$(wc -l <out/config_candidates.txt) checked=$(wc -l <out/check_urls.txt)" | tee -a out/results.txt
+      - name: Upload results even if a request failed
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: klarna-expanded-results
+          name: klarna-expanded-results-fixed
           path: out/
           retention-days: 1
