@@ -1,0 +1,77 @@
+name: TITAN V PRO Syfe UAT Auth Surface Map
+on:
+  workflow_dispatch:
+    inputs:
+      config_path:
+        description: 'Reviewed Syfe UAT config JSON'
+        required: true
+        default: 'bugbounty_runner/config.titan-syfe-uat.json'
+  push:
+    paths:
+      - 'bugbounty_runner/bridge/syfe-auth-command.json'
+permissions:
+  contents: read
+jobs:
+  auth-map:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install runtime
+        run: pip install requests
+      - id: resolve
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CONFIG='${{ inputs.config_path }}'
+          else
+            CONFIG=$(python3 - <<'PY'
+          import json
+          d=json.load(open('bugbounty_runner/bridge/syfe-auth-command.json'))
+          assert d.get('bridge_name') == 'HUNTER8'
+          assert d.get('action') == 'auth_surface_map'
+          print(d['config_path'])
+          PY
+          )
+          fi
+          test -f "$CONFIG"
+          echo "config_path=$CONFIG" >> "$GITHUB_OUTPUT"
+      - name: Syfe UAT safety preflight
+        shell: bash
+        env:
+          CONFIG_PATH: ${{ steps.resolve.outputs.config_path }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys, urllib.parse
+          sys.path.insert(0, 'bugbounty_runner')
+          from titan_v_pro_core import validate_config
+          cfg=json.load(open(os.environ['CONFIG_PATH'], encoding='utf-8'))
+          errors=validate_config(cfg)
+          if errors:
+              raise SystemExit('; '.join(errors))
+          programs=cfg.get('programs', [])
+          if len(programs) != 1 or programs[0].get('name') != 'syfe':
+              raise SystemExit('Syfe auth-map accepts only Syfe config')
+          allowed={'uat-bugbounty.nonprod.syfe.com','api-uat-bugbounty.nonprod.syfe.com','alfred-uat-31.nonprod.syfe.com'}
+          hosts={urllib.parse.urlsplit(x).hostname for x in programs[0].get('targets', [])}
+          if not hosts or not hosts.issubset(allowed):
+              raise SystemExit('Production or unreviewed host present in automated target list')
+          if cfg.get('scope_policy', {}).get('production_automation') is not False:
+              raise SystemExit('production_automation must be false')
+          print('syfe_uat_auth_map_preflight_ok', sorted(hosts))
+          PY
+      - name: Compile scanner
+        run: python -m py_compile bugbounty_runner/syfe_auth_surface_map.py
+      - name: Run curated UAT auth surface map
+        run: |
+          mkdir -p results
+          python bugbounty_runner/syfe_auth_surface_map.py \
+            --config '${{ steps.resolve.outputs.config_path }}' \
+            --out results/syfe-auth-map.json | tee results/summary.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: titan-v-pro-syfe-auth-map
+          path: results/
+          retention-days: 2
