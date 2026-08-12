@@ -1,5 +1,7 @@
 name: Klarna continuous scoped recon
-on: push
+on:
+  push:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -20,21 +22,22 @@ jobs:
           grep -Eo 'src=["'"'][^"'"']+\.js[^"'"']*["'"']' out/index.html | sed -E 's/^src=["'"']|["'"']$//g' | head -40 > out/js_paths.txt || true
           while IFS= read -r p; do
             [ -z "$p" ] && continue
-            case "$p" in http*) u="$p";; *) u="$BASE${p#/}"; u="$BASE/${p#/}";; esac
+            case "$p" in http*) u="$p";; *) u="$BASE/${p#/}";; esac
             f="js/$(echo "$u" | sha256sum | cut -c1-16).js"
             echo "GET $u" | tee -a out/results.txt
             curl -sS -L --max-redirs 2 --max-time 20 -A "$UA" "$u" -o "$f" || true
             sleep 1
           done < out/js_paths.txt
-          echo '[3/5] Extract Klarna hosts and candidate routes' | tee -a out/results.txt
+          echo '[3/5] Extract scoped Klarna hosts and candidate routes' | tee -a out/results.txt
           grep -rhoE 'https://[A-Za-z0-9._-]+\.(klarna\.com|klarna\.net|klarnacdn\.net)(/[A-Za-z0-9_./?=&%:-]*)?' js out/index.html 2>/dev/null | sort -u | head -500 > out/urls.txt || true
           grep -rhoE '/[A-Za-z0-9_.-]*(account|merchant|credential|payment|order|settlement|auth|session|organization|dispute|user)[A-Za-z0-9_./?=&%:-]*' js 2>/dev/null | sort -u | head -500 > out/routes.txt || true
           cat out/urls.txt out/routes.txt >> out/results.txt
-          echo '[4/5] Low-volume unauthenticated checks of same-origin candidates' | tee -a out/results.txt
+          echo '[4/5] Low-volume unauthenticated GET checks' | tee -a out/results.txt
           grep -E '^https://[^/]*\.klarna\.com/' out/urls.txt | head -30 | while read -r u; do
             code=$(curl -sS -o /tmp/body -w '%{http_code}' --max-time 12 -A "$UA" "$u" || true)
             size=$(wc -c </tmp/body 2>/dev/null || echo 0)
-            echo "$code $size $u" | tee -a out/results.txt
+            ctype=$(curl -sSI --max-time 8 -A "$UA" "$u" 2>/dev/null | awk -F': ' 'tolower($1)=="content-type"{print $2}' | tr -d '\r' | head -1)
+            echo "$code $size [$ctype] $u" | tee -a out/results.txt
             sleep 1
           done
           echo '[5/5] Complete' | tee -a out/results.txt
