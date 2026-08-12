@@ -1,0 +1,41 @@
+name: Klarna playground low-impact recon
+on:
+  push:
+    paths:
+      - '.github/workflows/klarna-playground-recon.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  recon:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Low-impact scoped checks
+        shell: bash
+        run: |
+          set -u
+          mkdir -p out
+          targets=(
+            'https://portal.playground.klarna.com'
+            'https://app.klarna.com'
+          )
+          : > out/results.txt
+          for u in "${targets[@]}"; do
+            echo "===== $u =====" >> out/results.txt
+            for p in / /robots.txt /.well-known/security.txt; do
+              echo "--- $p" >> out/results.txt
+              curl -sS --max-time 15 --connect-timeout 8 -A 'Mozilla/5.0 security-research-low-volume' -D /tmp/h -o /tmp/b "$u$p" || true
+              sed -n '1,40p' /tmp/h >> out/results.txt 2>/dev/null || true
+              echo "BODY_SIZE $(wc -c </tmp/b 2>/dev/null || echo 0)" >> out/results.txt
+              echo "BODY_SHA256 $(sha256sum /tmp/b 2>/dev/null | cut -d' ' -f1)" >> out/results.txt
+              if [ "$p" = "/" ]; then
+                grep -Eo 'https?://[^"'"'<> ]+|src=["'"'][^"'"']+' /tmp/b 2>/dev/null | head -80 >> out/results.txt || true
+              fi
+              sleep 1
+            done
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: klarna-playground-recon-results
+          path: out/results.txt
+          retention-days: 1
