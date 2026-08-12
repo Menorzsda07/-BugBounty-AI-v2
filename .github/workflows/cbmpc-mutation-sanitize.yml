@@ -1,0 +1,311 @@
+name: CBMPC Mutation Sanitizer
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-mutation-sanitize.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  mutate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Clone exact cb-mpc revision
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout 2369813b8b0507ce20febd1d81ef1708cdbb42d7 >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+
+      - name: Add private mutation test to runner copy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >> cb-mpc/tests/unit/api/test_ecdsa_mp.cpp <<'CPP'
+
+          #include <chrono>
+          #include <fstream>
+          #include <mutex>
+
+          namespace {
+
+          struct mutation_state_t {
+            std::atomic<bool> enabled{false};
+            std::atomic<int> send_counter{0};
+            int attacker = 1;
+            int target_send = -1;
+            int mode = 0;
+            std::atomic<bool> timed_out{false};
+            std::mutex mu;
+            std::vector<std::string> exceptions;
+          };
+
+          class mutating_api_transport_t final : public coinbase::api::data_transport_i {
+           public:
+            mutating_api_transport_t(int self, std::shared_ptr<coinbase::testutils::mpc_net_context_t> ctx,
+                                     std::shared_ptr<mutation_state_t> state)
+                : self_(self), ctx_(std::move(ctx)), state_(std::move(state)) {}
+
+            coinbase::error_t send(coinbase::api::party_idx_t receiver, coinbase::mem_t msg) override {
+              if (state_->enabled.load() && self_ == state_->attacker) {
+                const int seq = state_->send_counter.fetch_add(1);
+                if (seq == state_->target_send && msg.size > 0) {
+                  coinbase::buf_t mutated(msg);
+                  int pos = 0;
+                  switch (state_->mode) {
+                    case 0: pos = 0; break;
+                    case 1: pos = mutated.size() / 4; break;
+                    case 2: pos = mutated.size() / 2; break;
+                    case 3: pos = (mutated.size() * 3) / 4; break;
+                    default: pos = mutated.size() - 1; break;
+                  }
+                  if (pos < 0) pos = 0;
+                  if (pos >= mutated.size()) pos = mutated.size() - 1;
+                  mutated[pos] ^= static_cast<uint8_t>(0x80u | (1u << (state_->mode % 7)));
+                  ctx_->send(receiver, mutated);
+                  return SUCCESS;
+                }
+              }
+              ctx_->send(receiver, msg);
+              return SUCCESS;
+            }
+
+            coinbase::error_t receive(coinbase::api::party_idx_t sender, coinbase::buf_t& msg) override {
+              return ctx_->receive(sender, msg);
+            }
+
+            coinbase::error_t receive_all(const std::vector<coinbase::api::party_idx_t>& senders,
+                                          std::vector<coinbase::buf_t>& msgs) override {
+              std::vector<coinbase::mpc::party_idx_t> s;
+              s.reserve(senders.size());
+              for (auto x : senders) s.push_back(static_cast<coinbase::mpc::party_idx_t>(x));
+              return ctx_->receive_all(s, msgs);
+            }
+
+           private:
+            int self_;
+            std::shared_ptr<coinbase::testutils::mpc_net_context_t> ctx_;
+            std::shared_ptr<mutation_state_t> state_;
+          };
+
+          template <typename F>
+          static void run_mp_mutation_safe(
+              const std::vector<std::shared_ptr<coinbase::testutils::mpc_net_context_t>>& peers, F&& f,
+              std::vector<coinbase::error_t>& out_rv, const std::shared_ptr<mutation_state_t>& state) {
+            for (const auto& p : peers) p->reset();
+            out_rv.assign(peers.size(), UNINITIALIZED_ERROR);
+            state->timed_out.store(false);
+            {
+              std::lock_guard<std::mutex> lock(state->mu);
+              state->exceptions.clear();
+            }
+
+            std::atomic<bool> aborted{false};
+            std::atomic<bool> done{false};
+            std::vector<std::thread> threads;
+            threads.reserve(peers.size());
+
+            for (size_t i = 0; i < peers.size(); i++) {
+              threads.emplace_back([&, i] {
+                try {
+                  out_rv[i] = f(static_cast<int>(i));
+                } catch (const std::exception& e) {
+                  {
+                    std::lock_guard<std::mutex> lock(state->mu);
+                    state->exceptions.emplace_back(e.what());
+                  }
+                  out_rv[i] = E_GENERAL;
+                } catch (...) {
+                  {
+                    std::lock_guard<std::mutex> lock(state->mu);
+                    state->exceptions.emplace_back("non-std exception");
+                  }
+                  out_rv[i] = E_GENERAL;
+                }
+                if (out_rv[i] && !aborted.exchange(true)) {
+                  for (const auto& p : peers) p->abort();
+                }
+              });
+            }
+
+            std::thread watchdog([&] {
+              for (int tick = 0; tick < 400 && !done.load(); tick++)
+                std::this_thread::sleep_for(std::chrono::milliseconds(25));
+              if (!done.load()) {
+                state->timed_out.store(true);
+                if (!aborted.exchange(true)) {
+                  for (const auto& p : peers) p->abort();
+                }
+              }
+            });
+
+            for (auto& t : threads) t.join();
+            done.store(true);
+            watchdog.join();
+          }
+
+          static void write_case(std::ofstream& out, const char* kind, int send_no, int mode,
+                                 const std::shared_ptr<mutation_state_t>& state,
+                                 const std::vector<coinbase::error_t>& rvs) {
+            out << kind << " send=" << send_no << " mode=" << mode << " rvs=";
+            for (auto rv : rvs) out << rv << ',';
+            out << " timeout=" << state->timed_out.load();
+            std::lock_guard<std::mutex> lock(state->mu);
+            if (!state->exceptions.empty()) {
+              out << " exceptions=";
+              for (const auto& s : state->exceptions) out << '[' << s << ']';
+            }
+            out << '\n';
+            out.flush();
+          }
+
+          }  // namespace
+
+          TEST(ApiEcdsaMp, MutationCampaignSanitized) {
+            constexpr int n = 2;
+            auto state = std::make_shared<mutation_state_t>();
+            std::vector<std::shared_ptr<coinbase::testutils::mpc_net_context_t>> peers;
+            for (int i = 0; i < n; i++) peers.push_back(std::make_shared<coinbase::testutils::mpc_net_context_t>(i));
+            for (const auto& p : peers) p->init_with_peers(peers);
+
+            std::vector<std::shared_ptr<mutating_api_transport_t>> transports;
+            for (int i = 0; i < n; i++) transports.push_back(std::make_shared<mutating_api_transport_t>(i, peers[i], state));
+
+            std::vector<std::string> names = {"p0", "p1"};
+            std::vector<std::string_view> name_views = {names[0], names[1]};
+            std::vector<coinbase::buf_t> keys(n), sids(n), sigs(n);
+            std::vector<coinbase::error_t> rvs;
+            coinbase::buf_t msg(32);
+            for (int i = 0; i < msg.size(); i++) msg[i] = static_cast<uint8_t>(i + 1);
+
+            state->enabled.store(false);
+            run_mp_mutation_safe(
+                peers,
+                [&](int i) {
+                  coinbase::api::job_mp_t job{static_cast<coinbase::api::party_idx_t>(i), name_views, *transports[i]};
+                  return coinbase::api::ecdsa_mp::dkg_additive(job, coinbase::api::curve_id::secp256k1, keys[i], sids[i]);
+                },
+                rvs, state);
+            for (auto rv : rvs) ASSERT_EQ(rv, SUCCESS);
+
+            coinbase::buf_t pub_bin;
+            ASSERT_EQ(coinbase::api::ecdsa_mp::get_public_key_compressed(keys[0], pub_bin), SUCCESS);
+            coinbase::crypto::ecc_point_t Q;
+            ASSERT_EQ(Q.from_bin(coinbase::crypto::curve_secp256k1, pub_bin), SUCCESS);
+            coinbase::crypto::ecc_pub_key_t verify_key(Q);
+
+            state->enabled.store(true);
+            state->target_send = -1;
+            state->send_counter.store(0);
+            run_mp_mutation_safe(
+                peers,
+                [&](int i) {
+                  coinbase::api::job_mp_t job{static_cast<coinbase::api::party_idx_t>(i), name_views, *transports[i]};
+                  return coinbase::api::ecdsa_mp::sign_additive(job, keys[i], msg, 0, sigs[i]);
+                },
+                rvs, state);
+            for (auto rv : rvs) ASSERT_EQ(rv, SUCCESS);
+            ASSERT_FALSE(sigs[0].empty());
+            ASSERT_EQ(verify_key.verify(msg, sigs[0]), SUCCESS);
+
+            const int attacker_sends = state->send_counter.load();
+            ASSERT_GT(attacker_sends, 0);
+            const int tested_sends = std::min(attacker_sends, 36);
+            std::ofstream out("/code/mutation-results.txt", std::ios::trunc);
+            out << "baseline_attacker_sends=" << attacker_sends << " tested_sends=" << tested_sends << '\n';
+
+            for (int send_no = 0; send_no < tested_sends; send_no++) {
+              for (int mode = 0; mode < 5; mode++) {
+                for (auto& s : sigs) s.free();
+                state->target_send = send_no;
+                state->mode = mode;
+                state->send_counter.store(0);
+
+                run_mp_mutation_safe(
+                    peers,
+                    [&](int i) {
+                      coinbase::api::job_mp_t job{static_cast<coinbase::api::party_idx_t>(i), name_views, *transports[i]};
+                      return coinbase::api::ecdsa_mp::sign_additive(job, keys[i], msg, 0, sigs[i]);
+                    },
+                    rvs, state);
+
+                bool any_error = false;
+                for (auto rv : rvs) any_error = any_error || (rv != SUCCESS);
+                bool has_exception = false;
+                {
+                  std::lock_guard<std::mutex> lock(state->mu);
+                  has_exception = !state->exceptions.empty();
+                }
+                if (state->timed_out.load()) {
+                  write_case(out, "TIMEOUT", send_no, mode, state, rvs);
+                } else if (has_exception) {
+                  write_case(out, "EXCEPTION", send_no, mode, state, rvs);
+                } else if (!any_error) {
+                  if (sigs[0].empty() || verify_key.verify(msg, sigs[0]) != SUCCESS)
+                    write_case(out, "BAD_SUCCESS", send_no, mode, state, rvs);
+                  else
+                    write_case(out, "MUTATION_ACCEPTED_VALID_SIG", send_no, mode, state, rvs);
+                }
+              }
+            }
+            out << "campaign_complete\n";
+            out.close();
+          }
+          CPP
+
+      - name: Build image and run ASAN+UBSAN mutation campaign privately
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 40m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc \
+            'make sanitize filter=ApiEcdsaMp.MutationCampaignSanitized' \
+            >/tmp/sanitize.log 2>&1
+          status=$?
+          set -e
+          printf 'exit_status=%s\n' "$status" >/tmp/status.txt
+          if [ -f mutation-results.txt ]; then cp mutation-results.txt /tmp/mutation-results.txt; else echo 'no mutation result file' >/tmp/mutation-results.txt; fi
+          echo 'mutation sanitizer execution finished; detailed output is encrypted in the artifact'
+
+      - name: Encrypt private results
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >/tmp/cbmpc-public.pem <<'PEM'
+          -----BEGIN PUBLIC KEY-----
+          MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAioiYQLpxPmmImogC4zs1
+          lbU9Pp/TWVwaV2zyRryWM6e0ogZc/gNsnLftm+oMELOIkAATQGKVzlw6RZPGZco+
+          UXBmImYMVzzDPN7ebAcZcZJSsrZX4qmqtkZVZ/uSi0hVgyC68MNGUXUeWZhTadyF
+          FZY2Dtd28EdSCSZF3Yb/ay0FJXWGjka9LORgolaFD0NB1wHUlYzqx/SuhILgloH8
+          uD2cmwUs47y/LV6tOgpN1n1WHlMoBp1Ci1+fpQE1650Lr9+zJtTexoNJXxYJ0Cz4
+          k+A0vWSRLU0cD8mqNCepNmOeiQicCt6WZbgJMGOAOUcVV247TFYRWiZF2n92JLF+
+          QwIDAQAB
+          -----END PUBLIC KEY-----
+          PEM
+          mkdir -p /tmp/private-results
+          cp /tmp/status.txt /tmp/private-results/status.txt 2>/dev/null || true
+          cp /tmp/mutation-results.txt /tmp/private-results/mutation-results.txt 2>/dev/null || true
+          cp /tmp/sanitize.log /tmp/private-results/sanitize.log 2>/dev/null || true
+          cp /tmp/image-build.log /tmp/private-results/image-build.log 2>/dev/null || true
+          tar -C /tmp/private-results -czf /tmp/private-results.tar.gz .
+          openssl rand -hex 32 >/tmp/aes-pass.txt
+          openssl enc -aes-256-cbc -pbkdf2 -salt -in /tmp/private-results.tar.gz -out /tmp/private-results.tar.gz.enc -pass file:/tmp/aes-pass.txt
+          openssl pkeyutl -encrypt -pubin -inkey /tmp/cbmpc-public.pem -pkeyopt rsa_padding_mode:oaep -in /tmp/aes-pass.txt -out /tmp/aes-pass.txt.enc
+          rm -rf /tmp/private-results /tmp/private-results.tar.gz /tmp/aes-pass.txt /tmp/sanitize.log /tmp/image-build.log /tmp/status.txt /tmp/mutation-results.txt
+
+      - name: Upload encrypted results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cbmpc-mutation-private
+          path: |
+            /tmp/private-results.tar.gz.enc
+            /tmp/aes-pass.txt.enc
+          retention-days: 1
