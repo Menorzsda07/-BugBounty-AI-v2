@@ -6,10 +6,48 @@ on:
         description: 'Reviewed multi-program HackerOne scope config JSON'
         required: true
         default: 'bugbounty_runner/config.example.json'
+  push:
+    paths:
+      - 'bugbounty_runner/bridge/command.json'
 permissions:
   contents: read
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      config_path: ${{ steps.resolve.outputs.config_path }}
+      command_id: ${{ steps.resolve.outputs.command_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: resolve
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CONFIG='${{ inputs.config_path }}'
+            COMMAND_ID="manual-${{ github.run_id }}"
+          else
+            CONFIG=$(python3 - <<'PY'
+          import json
+          d=json.load(open('bugbounty_runner/bridge/command.json'))
+          assert d.get('bridge_name') == 'HUNTER8'
+          assert d.get('action') == 'scan'
+          print(d['config_path'])
+          PY
+          )
+            COMMAND_ID=$(python3 - <<'PY'
+          import json
+          d=json.load(open('bugbounty_runner/bridge/command.json'))
+          print(d['command_id'])
+          PY
+          )
+          fi
+          test -f "$CONFIG"
+          echo "config_path=$CONFIG" >> "$GITHUB_OUTPUT"
+          echo "command_id=$COMMAND_ID" >> "$GITHUB_OUTPUT"
+          echo "HUNTER8 command=$COMMAND_ID config=$CONFIG"
+
   scan:
+    needs: prepare
     strategy:
       fail-fast: false
       max-parallel: 8
@@ -26,10 +64,12 @@ jobs:
       - name: Run scanner pack on all reviewed programs and domains
         run: |
           mkdir -p results
+          echo "HUNTER8 ${{ needs.prepare.outputs.command_id }} runner=${{ matrix.runner }} starting"
           python bugbounty_runner/multi_scan.py \
-            --config '${{ inputs.config_path }}' \
+            --config '${{ needs.prepare.outputs.config_path }}' \
             --runner '${{ matrix.runner }}' \
             --out 'results/runner-${{ matrix.runner }}.json'
+          echo "HUNTER8 runner=${{ matrix.runner }} complete"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -38,7 +78,7 @@ jobs:
           retention-days: 2
 
   analyze:
-    needs: scan
+    needs: [prepare, scan]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -50,6 +90,7 @@ jobs:
           merge-multiple: true
       - name: Aggregate, deduplicate and rank candidates
         run: |
+          echo "HUNTER8 ${{ needs.prepare.outputs.command_id }} analyzing"
           python bugbounty_runner/analyze.py | tee results/summary.txt
       - uses: actions/upload-artifact@v4
         with:
