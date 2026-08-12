@@ -1,0 +1,45 @@
+name: TITAN V PRO regression CI
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'bugbounty_runner/titan_v_pro_core.py'
+      - 'bugbounty_runner/multi_scan.py'
+      - 'bugbounty_runner/analyze.py'
+      - 'bugbounty_runner/brain_code_vsystem.py'
+      - 'bugbounty_runner/memory/vulnerability-knowledge.json'
+      - 'bugbounty_runner/memory/brain-code-vsystem.json'
+      - 'bugbounty_runner/test_titan_v_pro.py'
+      - '.github/workflows/titan-v-pro-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install runtime
+        run: pip install requests
+      - name: Compile scanner
+        run: python -m compileall -q bugbounty_runner
+      - name: Run V PRO unit tests
+        working-directory: bugbounty_runner
+        run: python -m unittest -v test_titan_v_pro.py
+      - name: Validate WisdomTree V PRO config offline
+        run: |
+          python - <<'PY'
+          import json, sys
+          sys.path.insert(0, 'bugbounty_runner')
+          from titan_v_pro_core import validate_config
+          cfg=json.load(open('bugbounty_runner/config.titan-wisdomtree.json'))
+          errors=validate_config(cfg)
+          if errors:
+              raise SystemExit('; '.join(errors))
+          print('config_ok')
+          PY
