@@ -1,0 +1,57 @@
+name: TITAN V PRO isolated runner recovery
+
+on:
+  push:
+    paths:
+      - 'bugbounty_runner/bridge/runner-recovery-command.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install runtime
+        run: pip install requests
+      - name: Resolve and validate recovery command
+        id: resolve
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          sys.path.insert(0, 'bugbounty_runner')
+          from titan_v_pro_core import validate_config
+          cmd=json.load(open('bugbounty_runner/bridge/runner-recovery-command.json'))
+          assert cmd.get('bridge_name') == 'HUNTER8'
+          assert cmd.get('action') == 'scan_runner'
+          runner=int(cmd.get('runner'))
+          assert 0 <= runner <= 11
+          config=cmd.get('config_path','')
+          assert config.startswith('bugbounty_runner/config') and config.endswith('.json')
+          assert os.path.isfile(config)
+          cfg=json.load(open(config))
+          errors=validate_config(cfg)
+          if errors:
+              raise SystemExit('; '.join(errors))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              f.write(f'runner={runner}\n')
+              f.write(f'config={config}\n')
+              f.write(f"command_id={cmd.get('command_id','recovery')}\n")
+          print('recovery_preflight_ok')
+          PY
+      - name: Run isolated V PRO scanner pack
+        run: |
+          mkdir -p results
+          echo "TITAN recovery ${{ steps.resolve.outputs.command_id }} runner=${{ steps.resolve.outputs.runner }}"
+          python bugbounty_runner/multi_scan.py --config '${{ steps.resolve.outputs.config }}' --runner '${{ steps.resolve.outputs.runner }}' --out 'results/runner-${{ steps.resolve.outputs.runner }}.json'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: titan-v-pro-recovery-${{ steps.resolve.outputs.runner }}
+          path: results/runner-${{ steps.resolve.outputs.runner }}.json
+          retention-days: 2
