@@ -1,0 +1,53 @@
+{
+  "programs": [
+    {
+      "name": "wisdomtree",
+      "targets": [
+        "https://api.wisdomtreeprimeapp.com",
+        "https://app.wisdomtreeconnect.com/api/",
+        "https://app.wisdomtreeconnect.com/o/token/",
+        "https://app.wisdomtreeconnect.com"
+      ],
+      "exclude_paths": [],
+      "excluded_hosts": [
+        "wisdomtree.com",
+        "wisdomtree.eu",
+        "dataspanapi.wisdomtree.com"
+      ],
+      "notes": "Only bounty/submission-eligible URL assets from the user-provided WisdomTree HackerOne CSV. wisdomtree.com, wisdomtree.eu and dataspanapi.wisdomtree.com excluded. Mobile apps omitted from this web/API campaign. Respect program rules: no data modification, no privilege escalation, no PII/auth/bank data collection, no service degradation, no access beyond minimum necessary proof."
+    }
+  ],
+  "max_requests_per_target_per_runner": 24,
+  "delay_ms": 1000,
+  "runner_count": 12,
+  "enabled_modules": [
+    "surface",
+    "headers",
+    "well_known",
+    "js_routes",
+    "api_hints",
+    "sourcemaps",
+    "auth_boundary",
+    "method_diff",
+    "cors",
+    "cache",
+    "redirects",
+    "xss_reflection",
+    "sqli_differential",
+    "error_diff",
+    "openapi_graphql",
+    "sensitive_files",
+    "dns_http_inventory",
+    "fingerprints",
+    "status_anomaly",
+    "content_type_diff",
+    "path_normalization_diff",
+    "encoding_diff",
+    "header_behavior_diff",
+    "method_consistency",
+    "response_shape_diff",
+    "cache_variance"
+  ],
+  "aggressive_modules": [],
+  "notes": "TITAN WisdomTree-only 12-runner campaign. Exact user-provided HackerOne web/API scope only. Credential-required testing excluded. No DoS, data modification, privilege escalation, PII/auth/bank data collection, or disruptive behavior. Brain Code VSystem filters known false positives."
+}
