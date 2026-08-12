@@ -1,0 +1,9 @@
+{
+  "bridge_name": "HUNTER8",
+  "command_id": "titan-vpro-wolt-path-validate-20260812-2015",
+  "action": "validate",
+  "target": "https://wolt.com/",
+  "candidate": "path_normalization_diff",
+  "requested_by": "chatgpt",
+  "notes": "Repeat only /, //, and /./ twice with X-HackerOne-Research: ghosther. No redirects followed, no auth, no data access, no state changes."
+}
