@@ -1,0 +1,63 @@
+{
+  "titan_profile": "V PRO 1.0 - WOLT PHASE 2",
+  "authorized_scope_reviewed": true,
+  "programs": [
+    {
+      "name": "wolt",
+      "targets": [
+        "https://ops.wolt.com",
+        "https://merchant.wolt.com",
+        "https://drive.wolt.com",
+        "https://corporate.wolt.com"
+      ],
+      "exclude_paths": [],
+      "excluded_hosts": [],
+      "notes": "Wolt HackerOne Tier-1 Phase 2. Unauthenticated low-impact checks of explicitly in-scope admin portals only. No employee, merchant, courier, corporate, customer or venue data interaction."
+    }
+  ],
+  "request_headers": {
+    "X-HackerOne-Research": "ghosther"
+  },
+  "max_requests_per_target_per_runner": 10,
+  "delay_ms": 1500,
+  "runner_count": 12,
+  "evidence_policy": {
+    "store_response_bodies": false,
+    "store_secret_values": false,
+    "store_auth_material": false,
+    "store_pii_values": false
+  },
+  "scope_policy": {
+    "discovered_urls_must_be_allowlisted": true,
+    "follow_redirects": false,
+    "third_party_fetches": false
+  },
+  "program_constraints": {
+    "research_header_required": true,
+    "researcher_owned_accounts_only": true,
+    "bruteforce_forbidden": true,
+    "dos_forbidden": true,
+    "mass_entity_creation_forbidden": true,
+    "no_customer_or_merchant_data_access": true
+  },
+  "enabled_modules": [
+    "surface",
+    "js_routes",
+    "api_hints",
+    "sourcemaps",
+    "auth_boundary",
+    "redirects",
+    "xss_reflection",
+    "sqli_differential",
+    "openapi_graphql",
+    "status_anomaly",
+    "content_type_diff",
+    "path_normalization_diff",
+    "encoding_diff",
+    "header_behavior_diff",
+    "method_consistency",
+    "response_shape_diff"
+  ],
+  "aggressive_modules": [],
+  "notes": "No login/JWT in Phase 2. Missing headers/cookie flags, CORS without proven impact, rate-limit/bruteforce, fingerprints, DNS, cache DoS/poisoning and generic verbose-error disclosure intentionally excluded."
+}
