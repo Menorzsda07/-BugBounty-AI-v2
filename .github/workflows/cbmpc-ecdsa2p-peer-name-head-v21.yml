@@ -1,0 +1,96 @@
+name: CBMPC ECDSA2P Peer Name HEAD V21
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-ecdsa2p-peer-name-head-v21.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Clone exact current cb-mpc HEAD
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+          echo "tested_commit=$(git rev-parse HEAD)"
+
+      - name: Add current-HEAD empty-SID peer-name binding test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          p.write_text(p.read_text().replace('    delete queue.front();','    test_message_buffer_t::free(queue.front());'))
+          PY
+          cat >> cb-mpc/tests/unit/api/test_ecdsa2pc.cpp <<'CPP'
+
+          #include <fstream>
+
+          TEST(ApiEcdsa2pc, PeerNameCurrentHeadVerdictV21) {
+            auto c1=std::make_shared<mpc_net_context_t>(0);
+            auto c2=std::make_shared<mpc_net_context_t>(1);
+            std::vector<std::shared_ptr<mpc_net_context_t>> peers={c1,c2};
+            c1->init_with_peers(peers);c2->init_with_peers(peers);
+            local_api_transport_t t1(c1),t2(c2);
+
+            const coinbase::api::job_2p_t setup1{party_t::p1,"alice","bob",t1};
+            const coinbase::api::job_2p_t setup2{party_t::p2,"alice","bob",t2};
+            error_t rv1=UNINITIALIZED_ERROR,rv2=UNINITIALIZED_ERROR;
+            buf_t k1,k2;
+            run_2pc(c1,c2,
+              [&]{return coinbase::api::ecdsa_2p::dkg(setup1,curve_id::secp256k1,k1);},
+              [&]{return coinbase::api::ecdsa_2p::dkg(setup2,curve_id::secp256k1,k2);},rv1,rv2);
+            ASSERT_EQ(rv1,SUCCESS);ASSERT_EQ(rv2,SUCCESS);
+
+            const coinbase::api::job_2p_t mism1{party_t::p1,"alice","bob",t1};
+            const coinbase::api::job_2p_t mism2{party_t::p2,"alice","mallory",t2};
+
+            buf_t h(32);for(int i=0;i<h.size();i++)h[i]=(uint8_t)(0xA1+i);
+            buf_t sid1,sid2,sig1,sig2;
+            error_t sr1=UNINITIALIZED_ERROR,sr2=UNINITIALIZED_ERROR;
+            run_2pc(c1,c2,
+              [&]{return coinbase::api::ecdsa_2p::sign(mism1,k1,h,sid1,sig1);},
+              [&]{return coinbase::api::ecdsa_2p::sign(mism2,k2,h,sid2,sig2);},sr1,sr2);
+
+            int sid_match=(sid1==sid2&&!sid1.empty())?1:0;
+            int sign_success=(sr1==SUCCESS&&sr2==SUCCESS&&!sig1.empty())?1:0;
+            std::ofstream out("/code/v21-verdict.txt",std::ios::trunc);
+            out<<"commit=fdbb60346757271d5e0241f417e55dc8f289573c sign_rv="<<sr1<<","<<sr2
+               <<" sid1_size="<<sid1.size()<<" sid2_size="<<sid2.size()
+               <<" sid_match="<<sid_match<<" sig1_size="<<sig1.size()
+               <<" sign_success="<<sign_success<<"\n";
+          }
+          CPP
+
+      - name: Build and run ASAN UBSAN current-HEAD test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 40m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiEcdsa2pc.PeerNameCurrentHeadVerdictV21' >/tmp/sanitize.log 2>&1
+          status=$?
+          set -e
+          echo "sanitize_exit=$status"
+          if [ -f v21-verdict.txt ]; then cat v21-verdict.txt; else echo 'verdict_missing=1'; fi
+          if [ "$status" -ne 0 ]; then
+            echo 'V21_SANITIZER_OR_TEST_FAILURE=1'
+            tail -n 60 /tmp/sanitize.log
+            exit 1
+          fi
+          ok=$(sed -n 's/.*sign_success=\([0-9][0-9]*\).*/\1/p' v21-verdict.txt)
+          if [ "${ok:-0}" -gt 0 ]; then
+            echo 'CURRENT_HEAD_PEER_NAME_BINDING_CANDIDATE=1'
+            exit 2
+          fi
+          echo 'CURRENT_HEAD_PEER_NAME_BINDING_CANDIDATE=0'
