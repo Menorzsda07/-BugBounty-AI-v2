@@ -1,0 +1,110 @@
+name: CBMPC ECDSA2P DKG Peer Name Misbinding V24
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-ecdsa2p-dkg-peer-name-misbinding-v24.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Clone current cb-mpc HEAD
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+          echo "tested_commit=$(git rev-parse HEAD)"
+
+      - name: Add DKG identity-misbinding test through public API
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          p.write_text(p.read_text().replace('    delete queue.front();','    test_message_buffer_t::free(queue.front());'))
+          PY
+          cat >> cb-mpc/tests/unit/api/test_ecdsa2pc.cpp <<'CPP'
+
+          #include <fstream>
+
+          TEST(ApiEcdsa2pc, DkgPeerIdentityMisbindingVerdictV24) {
+            auto c1=std::make_shared<mpc_net_context_t>(0);
+            auto c2=std::make_shared<mpc_net_context_t>(1);
+            std::vector<std::shared_ptr<mpc_net_context_t>> peers={c1,c2};
+            c1->init_with_peers(peers);c2->init_with_peers(peers);
+            local_api_transport_t t1(c1),t2(c2);
+
+            // The parties disagree from the very first key-establishment call:
+            // P1's execution context says the peer is bob.
+            // P2's execution context says P2 is mallory.
+            const coinbase::api::job_2p_t j1{party_t::p1,"alice","bob",t1};
+            const coinbase::api::job_2p_t j2{party_t::p2,"alice","mallory",t2};
+
+            error_t d1=UNINITIALIZED_ERROR,d2=UNINITIALIZED_ERROR;
+            buf_t k1,k2;
+            run_2pc(c1,c2,
+              [&]{return coinbase::api::ecdsa_2p::dkg(j1,curve_id::secp256k1,k1);},
+              [&]{return coinbase::api::ecdsa_2p::dkg(j2,curve_id::secp256k1,k2);},d1,d2);
+
+            int dkg_success=(d1==SUCCESS&&d2==SUCCESS&&!k1.empty()&&!k2.empty())?1:0;
+            int pub_match=0;
+            buf_t p1,p2;
+            if(dkg_success &&
+               coinbase::api::ecdsa_2p::get_public_key_compressed(k1,p1)==SUCCESS &&
+               coinbase::api::ecdsa_2p::get_public_key_compressed(k2,p2)==SUCCESS && p1==p2) pub_match=1;
+
+            error_t s1=UNINITIALIZED_ERROR,s2=UNINITIALIZED_ERROR;
+            int sign_success=0, sid_match=0;
+            size_t sig_size=0;
+            if(dkg_success && pub_match){
+              buf_t h(32);for(int i=0;i<h.size();i++)h[i]=(uint8_t)(0xD1+i);
+              buf_t sid1,sid2,sig1,sig2;
+              run_2pc(c1,c2,
+                [&]{return coinbase::api::ecdsa_2p::sign(j1,k1,h,sid1,sig1);},
+                [&]{return coinbase::api::ecdsa_2p::sign(j2,k2,h,sid2,sig2);},s1,s2);
+              sid_match=(sid1==sid2&&!sid1.empty())?1:0;
+              sig_size=sig1.size();
+              sign_success=(s1==SUCCESS&&s2==SUCCESS&&!sig1.empty())?1:0;
+            }
+
+            std::ofstream out("/code/v24-verdict.txt",std::ios::trunc);
+            out<<"commit=fdbb60346757271d5e0241f417e55dc8f289573c"
+               <<" dkg_rv="<<d1<<","<<d2<<" dkg_success="<<dkg_success
+               <<" pub_match="<<pub_match
+               <<" sign_rv="<<s1<<","<<s2<<" sid_match="<<sid_match
+               <<" sig_size="<<sig_size<<" sign_success="<<sign_success<<"\n";
+          }
+          CPP
+
+      - name: Build and run ASAN UBSAN DKG misbinding test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 40m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiEcdsa2pc.DkgPeerIdentityMisbindingVerdictV24' >/tmp/sanitize.log 2>&1
+          status=$?
+          set -e
+          echo "sanitize_exit=$status"
+          if [ -f v24-verdict.txt ]; then cat v24-verdict.txt; else echo 'verdict_missing=1'; fi
+          if [ "$status" -ne 0 ]; then
+            echo 'V24_SANITIZER_OR_TEST_FAILURE=1'
+            tail -n 80 /tmp/sanitize.log
+            exit 1
+          fi
+          dkg=$(sed -n 's/.*dkg_success=\([0-9][0-9]*\).*/\1/p' v24-verdict.txt)
+          sign=$(sed -n 's/.*sign_success=\([0-9][0-9]*\).*/\1/p' v24-verdict.txt)
+          if [ "${dkg:-0}" -eq 1 ] && [ "${sign:-0}" -eq 1 ]; then
+            echo 'DKG_PEER_IDENTITY_MISBINDING_CANDIDATE=1'
+            exit 2
+          fi
+          echo 'DKG_PEER_IDENTITY_MISBINDING_CANDIDATE=0'
