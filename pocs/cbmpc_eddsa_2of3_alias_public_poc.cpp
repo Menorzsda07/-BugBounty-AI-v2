@@ -20,7 +20,6 @@
 using coinbase::buf_t;
 using coinbase::error_t;
 using coinbase::mem_t;
-using coinbase::SUCCESS;
 using coinbase::api::access_structure_t;
 using coinbase::api::curve_id;
 using coinbase::api::data_transport_i;
@@ -50,18 +49,18 @@ class transport_t final : public data_transport_i {
   transport_t(int self, std::shared_ptr<network_t> net) : self_(self), net_(std::move(net)) {}
 
   error_t send(party_idx_t receiver, mem_t msg) override {
-    if (receiver < 0 || receiver >= net_->n || receiver == self_) return coinbase::E_BADARG;
+    if (receiver < 0 || receiver >= net_->n || receiver == self_) return E_BADARG;
     auto c = net_->ch[self_][receiver];
     {
       std::lock_guard<std::mutex> lock(c->m);
-      c->q.emplace_back(msg);  // copy bytes before send() returns
+      c->q.emplace_back(msg);
     }
     c->cv.notify_one();
     return SUCCESS;
   }
 
   error_t receive(party_idx_t sender, buf_t& msg) override {
-    if (sender < 0 || sender >= net_->n || sender == self_) return coinbase::E_BADARG;
+    if (sender < 0 || sender >= net_->n || sender == self_) return E_BADARG;
     auto c = net_->ch[sender][self_];
     std::unique_lock<std::mutex> lock(c->m);
     c->cv.wait(lock, [&] { return !c->q.empty(); });
@@ -87,7 +86,7 @@ class transport_t final : public data_transport_i {
 
 template <typename Fn>
 std::vector<error_t> run_parties(int n, Fn fn) {
-  std::vector<error_t> rvs(static_cast<size_t>(n), coinbase::UNINITIALIZED_ERROR);
+  std::vector<error_t> rvs(static_cast<size_t>(n), UNINITIALIZED_ERROR);
   std::vector<std::thread> threads;
   for (int i = 0; i < n; ++i) threads.emplace_back([&, i] { rvs[static_cast<size_t>(i)] = fn(i); });
   for (auto& t : threads) t.join();
@@ -122,7 +121,6 @@ bool all_success(const std::vector<error_t>& rvs) {
 }  // namespace
 
 int main() {
-  // Three independent parties contribute to a 2-of-3 threshold key.
   const int n = 3;
   std::vector<std::string> names = {"honest-p0", "malicious-p1", "offline-p2"};
   std::vector<std::string_view> all_names = {names[0], names[1], names[2]};
@@ -152,29 +150,23 @@ int main() {
     return 4;
   }
 
-  // Signing quorum: honest P0 + malicious P1. P2 is offline.
   const std::vector<std::string_view> online_names = {names[0], names[1]};
   auto sign_net = std::make_shared<network_t>(2);
   auto t0 = std::make_shared<transport_t>(0, sign_net);
   auto t1 = std::make_shared<transport_t>(1, sign_net);
 
-  // P0's application approves a non-zero raw Ed25519 message.
   buf_t honest_message(32);
   for (int i = 0; i < 32; ++i) honest_message[i] = static_cast<uint8_t>(0x71 + (i % 8));
   const buf_t approved_message = honest_message;
 
-  // P1 wants a signature for 32 zero bytes and is the configured signature receiver.
   buf_t malicious_message(32);
   malicious_message.bzero();
   const buf_t attacker_message = malicious_message;
   buf_t attacker_signature;
 
-  std::vector<error_t> exploit_rvs(2, coinbase::UNINITIALIZED_ERROR);
+  std::vector<error_t> exploit_rvs(2, UNINITIALIZED_ERROR);
   std::thread honest([&] {
     job_mp_t job{0, online_names, *t0};
-    // The public API accepts msg as mem_t and sig as buf_t&. Reusing the same
-    // short buf_t means sign_ac() calls sig.free() and zeroizes the bytes backing
-    // the already-created msg view before the protocol checks message consistency.
     exploit_rvs[0] = coinbase::api::eddsa_mp::sign_ac(job, key_blobs[0], ac, honest_message,
                                                        /*sig_receiver=*/1, honest_message);
   });
@@ -190,16 +182,13 @@ int main() {
   const bool verifies_attacker = exploit_success && ed25519_verify(public_key, attacker_message, attacker_signature);
   const bool verifies_approved = exploit_success && ed25519_verify(public_key, approved_message, attacker_signature);
 
-  // A/B control: same parties, keys, messages, receiver; only difference is that
-  // honest P0 uses a distinct output buffer. The protocol should reject the
-  // message mismatch and P1 must receive no signature.
   auto control_net = std::make_shared<network_t>(2);
   auto c0 = std::make_shared<transport_t>(0, control_net);
   auto c1 = std::make_shared<transport_t>(1, control_net);
   buf_t control_honest_message = approved_message;
   buf_t control_malicious_message = attacker_message;
   buf_t honest_output, control_attacker_signature;
-  std::vector<error_t> control_rvs(2, coinbase::UNINITIALIZED_ERROR);
+  std::vector<error_t> control_rvs(2, UNINITIALIZED_ERROR);
   std::thread control_honest([&] {
     job_mp_t job{0, online_names, *c0};
     control_rvs[0] = coinbase::api::eddsa_mp::sign_ac(job, key_blobs[0], ac, control_honest_message,
