@@ -1,0 +1,153 @@
+name: CBMPC AC Policy Substitution V30
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-ac-policy-substitution-v30.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Clone current cb-mpc HEAD
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+          echo "tested_commit=$(git rev-parse HEAD)"
+
+      - name: Add public API quorum-policy substitution test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          p.write_text(p.read_text().replace('    delete queue.front();','    test_message_buffer_t::free(queue.front());'))
+          PY
+          cat >> cb-mpc/tests/unit/api/test_ecdsa_mp_ac.cpp <<'CPP'
+
+          #include <fstream>
+
+          TEST(ApiEcdsaMpAc, PolicySubstitutionUnauthorizedPairsVerdictV30) {
+            constexpr int n = 4;
+            std::vector<std::string> names = {"p0", "p1", "p2", "p3"};
+            std::vector<std::string_view> all_names = {names[0], names[1], names[2], names[3]};
+
+            const auto leaf = [&](int i) { return coinbase::api::access_structure_t::leaf(names[static_cast<size_t>(i)]); };
+            const coinbase::api::access_structure_t original =
+                coinbase::api::access_structure_t::Threshold(3, {leaf(0), leaf(1), leaf(2), leaf(3)});
+            const std::vector<std::string_view> dkg_quorum = {names[0], names[1], names[2]};
+
+            auto peers = make_peers(n);
+            auto transports = make_transports(peers);
+            std::vector<buf_t> keys(n), sids(n);
+            std::vector<error_t> rvs;
+            run_mp(peers, [&](int i) {
+              job_mp_t job{static_cast<party_idx_t>(i), all_names, *transports[static_cast<size_t>(i)]};
+              return coinbase::api::ecdsa_mp::dkg_ac(job, curve_id::secp256k1, sids[static_cast<size_t>(i)],
+                                                     original, dkg_quorum, keys[static_cast<size_t>(i)]);
+            }, rvs);
+            for (auto rv : rvs) ASSERT_EQ(rv, SUCCESS);
+
+            buf_t pub;
+            ASSERT_EQ(coinbase::api::ecdsa_mp::get_public_key_compressed(keys[0], pub), SUCCESS);
+            coinbase::crypto::ecc_point_t Q;
+            ASSERT_EQ(Q.from_bin(coinbase::crypto::curve_secp256k1, pub), SUCCESS);
+            const coinbase::crypto::ecc_pub_key_t verify_key(Q);
+            const buf_t msg_hash = make_msg_hash32();
+
+            std::vector<coinbase::api::access_structure_t> alternatives;
+            alternatives.push_back(coinbase::api::access_structure_t::Threshold(2, {leaf(0), leaf(1), leaf(2), leaf(3)}));
+            alternatives.push_back(coinbase::api::access_structure_t::Or({
+                coinbase::api::access_structure_t::And({leaf(0), leaf(1)}),
+                coinbase::api::access_structure_t::And({leaf(2), leaf(3)})}));
+            alternatives.push_back(coinbase::api::access_structure_t::Or({
+                coinbase::api::access_structure_t::And({leaf(0), leaf(2)}),
+                coinbase::api::access_structure_t::And({leaf(1), leaf(3)})}));
+            alternatives.push_back(coinbase::api::access_structure_t::And({
+                coinbase::api::access_structure_t::Or({leaf(0), leaf(1)}),
+                coinbase::api::access_structure_t::Or({leaf(2), leaf(3)})}));
+
+            const int pairs[][2] = {{0,1},{0,2},{0,3},{1,2},{1,3},{2,3}};
+            int tested = 0;
+            int all_success = 0;
+            int valid_sig = 0;
+            int candidate_alt = -1;
+            int candidate_a = -1;
+            int candidate_b = -1;
+
+            for (size_t ai = 0; ai < alternatives.size(); ++ai) {
+              for (const auto& pair : pairs) {
+                ++tested;
+                auto sp = make_peers(2);
+                auto st = make_transports(sp);
+                std::vector<std::string_view> qnames = {names[static_cast<size_t>(pair[0])],
+                                                        names[static_cast<size_t>(pair[1])]};
+                std::vector<buf_t> sigs(2);
+                std::vector<error_t> srvs;
+                run_mp(sp, [&](int i) {
+                  job_mp_t job{static_cast<party_idx_t>(i), qnames, *st[static_cast<size_t>(i)]};
+                  const int key_idx = pair[i];
+                  return coinbase::api::ecdsa_mp::sign_ac(job, keys[static_cast<size_t>(key_idx)],
+                                                          alternatives[ai], msg_hash, 0,
+                                                          sigs[static_cast<size_t>(i)]);
+                }, srvs);
+
+                const bool ok = srvs.size() == 2 && srvs[0] == SUCCESS && srvs[1] == SUCCESS && !sigs[0].empty();
+                if (ok) {
+                  ++all_success;
+                  if (verify_key.verify(msg_hash, sigs[0]) == SUCCESS) {
+                    ++valid_sig;
+                    candidate_alt = static_cast<int>(ai);
+                    candidate_a = pair[0];
+                    candidate_b = pair[1];
+                  }
+                }
+              }
+            }
+
+            std::ofstream out("/code/v30-verdict.txt", std::ios::trunc);
+            out << "commit=fdbb60346757271d5e0241f417e55dc8f289573c tested=" << tested
+                << " all_success=" << all_success << " valid_sig=" << valid_sig
+                << " candidate_alt=" << candidate_alt << " candidate_pair=" << candidate_a << "," << candidate_b
+                << "\n";
+          }
+          CPP
+
+      - name: Build and run ASAN UBSAN policy-substitution test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 40m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiEcdsaMpAc.PolicySubstitutionUnauthorizedPairsVerdictV30' >/tmp/sanitize.log 2>&1
+          status=$?
+          set -e
+          echo "sanitize_exit=$status"
+          if [ -f v30-verdict.txt ]; then cat v30-verdict.txt; else echo 'verdict_missing=1'; fi
+          if grep -Eq 'AddressSanitizer|heap-buffer-overflow|stack-buffer-overflow|SEGV|runtime error:' /tmp/sanitize.log; then
+            echo 'AC_POLICY_MEMORY_SAFETY_CANDIDATE=1'
+            tail -n 120 /tmp/sanitize.log
+            exit 2
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo 'V30_TEST_OR_BUILD_FAILURE=1'
+            tail -n 120 /tmp/sanitize.log
+            exit 1
+          fi
+          valid=$(sed -n 's/.*valid_sig=\([0-9][0-9]*\).*/\1/p' v30-verdict.txt)
+          if [ "${valid:-0}" -gt 0 ]; then
+            echo 'AC_POLICY_QUORUM_BYPASS_CANDIDATE=1'
+            exit 2
+          fi
+          echo 'AC_POLICY_QUORUM_BYPASS_CANDIDATE=0'
