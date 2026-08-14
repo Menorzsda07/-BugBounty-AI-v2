@@ -1,0 +1,113 @@
+name: CBMPC Public API Alias UAF V32
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-public-api-alias-uaf-v32.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Clone current cb-mpc HEAD
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+          echo "tested_commit=$(git rev-parse HEAD)"
+
+      - name: Add public API aliasing regression test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          p.write_text(p.read_text().replace('    delete queue.front();','    test_message_buffer_t::free(queue.front());'))
+          PY
+          cat >> cb-mpc/tests/unit/api/test_ecdsa2pc.cpp <<'CPP'
+
+          namespace {
+
+          TEST(ApiEcdsa2pcAlias, SignOutputAliasesKeyBlobV32) {
+            auto c1 = std::make_shared<mpc_net_context_t>(0);
+            auto c2 = std::make_shared<mpc_net_context_t>(1);
+            std::vector<std::shared_ptr<mpc_net_context_t>> peers = {c1, c2};
+            c1->init_with_peers(peers);
+            c2->init_with_peers(peers);
+
+            local_api_transport_t t1(c1);
+            local_api_transport_t t2(c2);
+            const coinbase::api::job_2p_t job1{party_t::p1, "p1", "p2", t1};
+            const coinbase::api::job_2p_t job2{party_t::p2, "p1", "p2", t2};
+
+            buf_t key_blob_1;
+            buf_t key_blob_2;
+            error_t rv1 = UNINITIALIZED_ERROR;
+            error_t rv2 = UNINITIALIZED_ERROR;
+            run_2pc(
+                c1, c2,
+                [&] { return coinbase::api::ecdsa_2p::dkg(job1, curve_id::secp256k1, key_blob_1); },
+                [&] { return coinbase::api::ecdsa_2p::dkg(job2, curve_id::secp256k1, key_blob_2); },
+                rv1, rv2);
+            ASSERT_EQ(rv1, SUCCESS);
+            ASSERT_EQ(rv2, SUCCESS);
+            ASSERT_GT(key_blob_1.size(), 36);
+
+            buf_t msg_hash(32);
+            for (int i = 0; i < msg_hash.size(); ++i) msg_hash[i] = static_cast<uint8_t>(0xA0 + i);
+            buf_t sid1;
+            buf_t sid2;
+            buf_t sig2;
+
+            // Public API aliasing test: the caller-provided output object is also the
+            // storage backing the mem_t key_blob input. sign_common() currently calls
+            // sig_der.free() before parsing key_blob. If aliases are not handled, the
+            // mem_t becomes a dangling view and ASan should report a heap-use-after-free.
+            run_2pc(
+                c1, c2,
+                [&] { return coinbase::api::ecdsa_2p::sign(job1, key_blob_1, msg_hash, sid1, key_blob_1); },
+                [&] { return coinbase::api::ecdsa_2p::sign(job2, key_blob_2, msg_hash, sid2, sig2); },
+                rv1, rv2);
+
+            // If execution survives without a sanitizer finding, record the semantic result.
+            std::ofstream out("/code/v32-verdict.txt", std::ios::trunc);
+            out << "rv1=" << rv1 << " rv2=" << rv2
+                << " p1_output_size=" << key_blob_1.size()
+                << " p2_output_size=" << sig2.size() << "\n";
+          }
+
+          }  // namespace
+          CPP
+
+      - name: Build and run ASAN UBSAN alias test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 40m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiEcdsa2pcAlias.SignOutputAliasesKeyBlobV32' >/tmp/sanitize.log 2>&1
+          status=$?
+          set -e
+          echo "sanitize_exit=$status"
+          if [ -f v32-verdict.txt ]; then cat v32-verdict.txt; else echo 'verdict_missing=1'; fi
+          if grep -Eqi 'AddressSanitizer|heap-use-after-free|use-after-free|SEGV|runtime error:' /tmp/sanitize.log; then
+            echo 'PUBLIC_API_ALIAS_MEMORY_SAFETY_CANDIDATE=1'
+            grep -Ein -C 8 'AddressSanitizer|heap-use-after-free|use-after-free|SEGV|runtime error:' /tmp/sanitize.log | head -n 180 || true
+            exit 2
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo 'V32_TEST_OR_BUILD_FAILURE=1'
+            tail -n 160 /tmp/sanitize.log
+            exit 1
+          fi
+          echo 'PUBLIC_API_ALIAS_MEMORY_SAFETY_CANDIDATE=0'
