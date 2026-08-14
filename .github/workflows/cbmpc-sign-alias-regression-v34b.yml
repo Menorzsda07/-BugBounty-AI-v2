@@ -1,0 +1,103 @@
+name: CBMPC Sign Alias Regression V34B
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-sign-alias-regression-v34b.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: before_pr131
+            ref: 2369813b8b0507ce20febd1d81ef1708cdbb42d7
+          - label: after_pr131
+            ref: fdbb60346757271d5e0241f417e55dc8f289573c
+    steps:
+      - name: Clone target commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout '${{ matrix.ref }}' >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+          echo "label=${{ matrix.label }} commit=$(git rev-parse HEAD)"
+
+      - name: Add isolated public alias regression test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          if p.exists():
+              p.write_text(p.read_text().replace('    delete queue.front();','    test_message_buffer_t::free(queue.front());'))
+          PY
+          cat >> cb-mpc/tests/unit/api/test_ecdsa2pc.cpp <<'CPP'
+
+          namespace {
+          class v34b_fail_transport_t final : public data_transport_i {
+           public:
+            error_t send(party_idx_t, mem_t) override { return E_GENERAL; }
+            error_t receive(party_idx_t, buf_t&) override { return E_GENERAL; }
+            error_t receive_all(const std::vector<party_idx_t>&, std::vector<buf_t>&) override { return E_GENERAL; }
+          };
+          }
+
+          TEST(ApiEcdsa2pc, SignKeyBlobOutputAliasRegressionV34B) {
+            auto c1 = std::make_shared<mpc_net_context_t>(0);
+            auto c2 = std::make_shared<mpc_net_context_t>(1);
+            std::vector<std::shared_ptr<mpc_net_context_t>> peers = {c1, c2};
+            c1->init_with_peers(peers);
+            c2->init_with_peers(peers);
+            local_api_transport_t t1(c1);
+            local_api_transport_t t2(c2);
+            const coinbase::api::job_2p_t dkg1{party_t::p1, "p1", "p2", t1};
+            const coinbase::api::job_2p_t dkg2{party_t::p2, "p1", "p2", t2};
+            buf_t key1, key2;
+            error_t rv1 = UNINITIALIZED_ERROR, rv2 = UNINITIALIZED_ERROR;
+            run_2pc(c1, c2,
+                    [&] { return coinbase::api::ecdsa_2p::dkg(dkg1, curve_id::secp256k1, key1); },
+                    [&] { return coinbase::api::ecdsa_2p::dkg(dkg2, curve_id::secp256k1, key2); },
+                    rv1, rv2);
+            ASSERT_EQ(rv1, SUCCESS);
+            ASSERT_EQ(rv2, SUCCESS);
+            ASSERT_GT(key1.size(), 36);
+
+            v34b_fail_transport_t ft;
+            const coinbase::api::job_2p_t job1{party_t::p1, "p1", "p2", ft};
+            buf_t msg_hash(32);
+            for (int i = 0; i < msg_hash.size(); ++i) msg_hash[i] = static_cast<uint8_t>(0xb0 + i);
+            buf_t sid;
+            mem_t key_view = key1;
+            const error_t rv = coinbase::api::ecdsa_2p::sign(job1, key_view, msg_hash, sid, key1);
+            (void)rv;
+          }
+          CPP
+
+      - name: Run ASAN and classify
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 30m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiEcdsa2pc.SignKeyBlobOutputAliasRegressionV34B' >/tmp/sanitize.log 2>&1
+          status=$?
+          set -e
+          echo "label=${{ matrix.label }} sanitize_exit=$status"
+          if grep -Eq 'heap-use-after-free|AddressSanitizer.*use-after-free' /tmp/sanitize.log; then
+            echo "${{ matrix.label }}_UAF=1"
+            exit 0
+          fi
+          echo "${{ matrix.label }}_UAF=0"
+          if [ "$status" -ne 0 ]; then tail -n 80 /tmp/sanitize.log; fi
