@@ -1,0 +1,85 @@
+name: CBMPC PVE Stale Output V29
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-pve-stale-output-v29.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Clone current cb-mpc HEAD
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+
+      - name: Add public PVE stale-output regression test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >> cb-mpc/tests/unit/api/test_pve.cpp <<'CPP'
+
+          #include <fstream>
+
+          TEST(ApiPve, FailedDecryptRetainsPriorOutputVerdictV29) {
+            using coinbase::buf_t;
+            using coinbase::api::curve_id;
+
+            buf_t ek, dk;
+            ASSERT_EQ(coinbase::api::pve::generate_base_pke_ecies_p256_keypair(ek, dk), SUCCESS);
+
+            buf_t x(32);
+            for (int i = 0; i < x.size(); ++i) x[i] = static_cast<uint8_t>(i + 1);
+            const buf_t label("v29-label");
+            buf_t ct;
+            ASSERT_EQ(coinbase::api::pve::encrypt(curve_id::secp256k1, ek, label, x, ct), SUCCESS);
+
+            buf_t out;
+            ASSERT_EQ(coinbase::api::pve::decrypt(curve_id::secp256k1, dk, ek, ct, label, out), SUCCESS);
+            ASSERT_FALSE(out.empty());
+            const buf_t prior = out;
+
+            // Malformed ciphertext fails during public-wrapper parsing before the protocol decrypt path.
+            buf_t malformed(1);
+            malformed[0] = 0xff;
+            const coinbase::error_t rv = coinbase::api::pve::decrypt(
+                curve_id::secp256k1, dk, ek, malformed, label, out);
+
+            const int retained = (rv != SUCCESS && out == prior && !out.empty()) ? 1 : 0;
+            std::ofstream verdict("/code/v29-verdict.txt", std::ios::trunc);
+            verdict << "rv=" << rv << " prior_size=" << prior.size()
+                    << " post_failure_size=" << out.size() << " retained=" << retained << "\n";
+          }
+          CPP
+
+      - name: Build and run public PVE stale-output test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 40m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiPve.FailedDecryptRetainsPriorOutputVerdictV29' >/tmp/sanitize.log 2>&1
+          status=$?
+          set -e
+          echo "sanitize_exit=$status"
+          if [ -f v29-verdict.txt ]; then cat v29-verdict.txt; else echo 'verdict_missing=1'; fi
+          if [ "$status" -ne 0 ]; then
+            echo 'V29_TEST_OR_BUILD_FAILURE=1'
+            tail -n 100 /tmp/sanitize.log
+            exit 1
+          fi
+          retained=$(sed -n 's/.*retained=\([0-9][0-9]*\).*/\1/p' v29-verdict.txt)
+          if [ "${retained:-0}" -eq 1 ]; then
+            echo 'PVE_STALE_OUTPUT_CANDIDATE=1'
+            exit 2
+          fi
+          echo 'PVE_STALE_OUTPUT_CANDIDATE=0'
