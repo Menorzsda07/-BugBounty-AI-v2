@@ -1,0 +1,138 @@
+name: CBMPC TDH2 Integrity Verdict V10
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-tdh2-integrity-verdict-v10.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Clone exact cb-mpc HEAD
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout 2369813b8b0507ce20febd1d81ef1708cdbb42d7 >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+
+      - name: Add TDH2 integrity verdict test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          s=p.read_text().replace('    delete queue.front();','    test_message_buffer_t::free(queue.front());')
+          p.write_text(s)
+          PY
+          cat >> cb-mpc/tests/unit/api/test_tdh2.cpp <<'CPP'
+
+          TEST(ApiTdh2, IntegrityMutationVerdictV10) {
+            constexpr int n=3;
+            std::vector<std::shared_ptr<mpc_net_context_t>> peers;
+            for(int i=0;i<n;i++) peers.push_back(std::make_shared<mpc_net_context_t>(i));
+            for(auto&p:peers) p->init_with_peers(peers);
+            std::vector<std::shared_ptr<local_api_transport_t>> tr;
+            for(auto&p:peers) tr.push_back(std::make_shared<local_api_transport_t>(p));
+            std::vector<std::string> names={"p0","p1","p2"};
+            std::vector<std::string_view> nv={names[0],names[1],names[2]};
+            std::vector<buf_t> pks(n),priv(n),sids(n);
+            std::vector<std::vector<buf_t>> pubs(n);
+            std::vector<error_t> rvs;
+            run_mp(peers,[&](int i){job_mp_t job{(party_idx_t)i,nv,*tr[i]};return coinbase::api::tdh2::dkg_additive(job,curve_id::secp256k1,pks[i],pubs[i],priv[i],sids[i]);},rvs);
+            for(auto rv:rvs) ASSERT_EQ(rv,SUCCESS);
+            for(int i=1;i<n;i++){ASSERT_EQ(pks[0],pks[i]);ASSERT_EQ(pubs[0],pubs[i]);}
+
+            buf_t plain(32); for(int i=0;i<plain.size();i++) plain[i]=(uint8_t)(0x90+i);
+            buf_t label("tdh2-integrity-v10"), ct;
+            ASSERT_EQ(coinbase::api::tdh2::encrypt(pks[0],plain,label,ct),SUCCESS);
+            ASSERT_EQ(coinbase::api::tdh2::verify(pks[0],ct,label),SUCCESS);
+            std::vector<buf_t> parts(n);
+            for(int i=0;i<n;i++) ASSERT_EQ(coinbase::api::tdh2::partial_decrypt(priv[i],ct,label,parts[i]),SUCCESS);
+            auto pubm=buf_t::to_mems(pubs[0]); auto partm=buf_t::to_mems(parts); buf_t dec;
+            ASSERT_EQ(coinbase::api::tdh2::combine_additive(pks[0],pubm,label,partm,ct,dec),SUCCESS);
+            ASSERT_EQ(dec,plain);
+
+            int wrong_success=0, exceptions=0, mutated_verify_accept=0, mutated_partial_accept=0;
+            auto test_combine=[&](const std::vector<buf_t>& qbuf,const std::vector<buf_t>& pbuf,const buf_t& c){
+              auto qm=buf_t::to_mems(qbuf); auto pm=buf_t::to_mems(pbuf); buf_t o; error_t rv=E_GENERAL;
+              try { rv=coinbase::api::tdh2::combine_additive(pks[0],qm,label,pm,c,o); }
+              catch(...) { exceptions++; return; }
+              if(rv==SUCCESS && o!=plain) wrong_success++;
+            };
+
+            const int positions=80;
+            for(int k=0;k<positions;k++){
+              int pos=(int)((int64_t)k*(ct.size()-1)/(positions-1));
+              for(int mode=0;mode<3;mode++){
+                buf_t m(ct); m[pos]^=(uint8_t)(mode==0?1:mode==1?0x80:0xFF);
+                if(coinbase::api::tdh2::verify(pks[0],m,label)==SUCCESS) mutated_verify_accept++;
+                buf_t pd; if(coinbase::api::tdh2::partial_decrypt(priv[0],m,label,pd)==SUCCESS) mutated_partial_accept++;
+                test_combine(pubs[0],parts,m);
+              }
+            }
+            for(int cut=1;cut<64;cut++){
+              int keep=(int)((int64_t)cut*(ct.size()-1)/64); if(keep<1)keep=1;
+              buf_t m(ct.take(keep)); test_combine(pubs[0],parts,m);
+            }
+            for(int idx=0;idx<n;idx++){
+              int sz=parts[idx].size();
+              for(int k=0;k<64;k++){
+                int pos=(int)((int64_t)k*(sz-1)/63); std::vector<buf_t> ps=parts;
+                ps[idx][pos]^=(uint8_t)(0x80|(1<<(k%7))); test_combine(pubs[0],ps,ct);
+              }
+              for(int cut=1;cut<20;cut++){
+                int keep=(int)((int64_t)cut*(sz-1)/20); if(keep<1)keep=1; std::vector<buf_t> ps=parts;
+                ps[idx]=buf_t(ps[idx].take(keep)); test_combine(pubs[0],ps,ct);
+              }
+            }
+            for(int idx=0;idx<n;idx++){
+              int sz=pubs[0][idx].size();
+              for(int k=0;k<32;k++){
+                int pos=(int)((int64_t)k*(sz-1)/31); std::vector<buf_t> qs=pubs[0];
+                qs[idx][pos]^=(uint8_t)(0x80|(1<<(k%7))); test_combine(qs,parts,ct);
+              }
+            }
+
+            std::ofstream out("/code/tdh2-verdict.txt",std::ios::trunc);
+            out << "wrong_success=" << wrong_success << " exceptions=" << exceptions
+                << " mutated_verify_accept=" << mutated_verify_accept
+                << " mutated_partial_accept=" << mutated_partial_accept << "\n";
+          }
+          CPP
+
+      - name: Build and run ASAN UBSAN verdict
+        id: run
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 40m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiTdh2.IntegrityMutationVerdictV10' >/tmp/sanitize.log 2>&1
+          status=$?
+          set -e
+          echo "sanitize_exit=$status"
+          if [ -f tdh2-verdict.txt ]; then
+            cat tdh2-verdict.txt
+          else
+            echo "verdict_missing=1"
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "TDH2_SANITIZER_FAILURE=1"
+            tail -n 40 /tmp/sanitize.log
+            exit 1
+          fi
+          wrong=$(sed -n 's/.*wrong_success=\([0-9][0-9]*\).*/\1/p' tdh2-verdict.txt)
+          exc=$(sed -n 's/.*exceptions=\([0-9][0-9]*\).*/\1/p' tdh2-verdict.txt)
+          if [ "${wrong:-0}" -gt 0 ] || [ "${exc:-0}" -gt 0 ]; then
+            echo "TDH2_INTEGRITY_CANDIDATE=1"
+            exit 2
+          fi
+          echo "TDH2_INTEGRITY_CANDIDATE=0"
