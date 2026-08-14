@@ -1,0 +1,111 @@
+name: CBMPC ECDSA2P Message Mismatch Control V37
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-ecdsa2p-message-mismatch-control-v37.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Clone exact current cb-mpc HEAD
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+          echo "tested_commit=$(git rev-parse HEAD)"
+
+      - name: Add non-aliasing mismatch control
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          p.write_text(p.read_text().replace('    delete queue.front();','    test_message_buffer_t::free(queue.front());'))
+          PY
+          cat >> cb-mpc/tests/unit/api/test_ecdsa2pc.cpp <<'CPP'
+
+          #include <fstream>
+
+          TEST(ApiEcdsa2pcAliasV37, DistinctOutputRejectsMessageMismatch) {
+            auto c1 = std::make_shared<mpc_net_context_t>(0);
+            auto c2 = std::make_shared<mpc_net_context_t>(1);
+            std::vector<std::shared_ptr<mpc_net_context_t>> peers = {c1, c2};
+            c1->init_with_peers(peers);
+            c2->init_with_peers(peers);
+            local_api_transport_t t1(c1), t2(c2);
+            const coinbase::api::job_2p_t j1{party_t::p1, "alice", "bob", t1};
+            const coinbase::api::job_2p_t j2{party_t::p2, "alice", "bob", t2};
+
+            buf_t k1, k2;
+            error_t d1 = UNINITIALIZED_ERROR, d2 = UNINITIALIZED_ERROR;
+            run_2pc(c1, c2,
+              [&] { return coinbase::api::ecdsa_2p::dkg(j1, curve_id::secp256k1, k1); },
+              [&] { return coinbase::api::ecdsa_2p::dkg(j2, curve_id::secp256k1, k2); }, d1, d2);
+            ASSERT_EQ(d1, SUCCESS); ASSERT_EQ(d2, SUCCESS);
+
+            buf_t p1_msg(32);
+            for (int i = 0; i < 32; ++i) p1_msg[i] = static_cast<uint8_t>(0x41 + i);
+            buf_t p2_msg(32);
+            p2_msg.bzero();
+
+            // Control: unlike v35, P1's output is a distinct object and therefore
+            // clearing it cannot mutate p1_msg.
+            buf_t sid1, sid2, sig1, sig2;
+            error_t s1 = UNINITIALIZED_ERROR, s2 = UNINITIALIZED_ERROR;
+            run_2pc(c1, c2,
+              [&] { return coinbase::api::ecdsa_2p::sign(j1, k1, p1_msg, sid1, sig1); },
+              [&] { return coinbase::api::ecdsa_2p::sign(j2, k2, p2_msg, sid2, sig2); }, s1, s2);
+
+            const int both_success = (s1 == SUCCESS && s2 == SUCCESS) ? 1 : 0;
+            const int any_sig = (!sig1.empty() || !sig2.empty()) ? 1 : 0;
+            std::ofstream out("/code/v37-verdict.txt", std::ios::trunc);
+            out << "commit=fdbb60346757271d5e0241f417e55dc8f289573c"
+                << " sign_rv=" << s1 << "," << s2
+                << " both_success=" << both_success
+                << " any_sig=" << any_sig
+                << " p1_msg_size=" << p1_msg.size()
+                << " p2_msg_size=" << p2_msg.size() << "\n";
+          }
+          CPP
+
+      - name: Build and run ASAN UBSAN control
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 35m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiEcdsa2pcAliasV37.DistinctOutputRejectsMessageMismatch' >/tmp/v37.log 2>&1
+          status=$?
+          set -e
+          echo "sanitize_exit=$status"
+          if [ -f v37-verdict.txt ]; then cat v37-verdict.txt; else echo 'verdict_missing=1'; fi
+          if grep -Eqi 'AddressSanitizer|runtime error:' /tmp/v37.log; then
+            echo 'V37_UNEXPECTED_SANITIZER_FINDING=1'
+            grep -Ein -C 8 'AddressSanitizer|runtime error:' /tmp/v37.log | head -n 120 || true
+            exit 2
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo 'V37_TEST_OR_BUILD_FAILURE=1'
+            tail -n 120 /tmp/v37.log
+            exit 1
+          fi
+          success=$(sed -n 's/.*both_success=\([0-9][0-9]*\).*/\1/p' v37-verdict.txt)
+          sig=$(sed -n 's/.*any_sig=\([0-9][0-9]*\).*/\1/p' v37-verdict.txt)
+          if [ "${success:-1}" -eq 0 ] && [ "${sig:-1}" -eq 0 ]; then
+            echo 'ECDSA2P_MISMATCH_CONTROL_REJECTED=1'
+            exit 0
+          fi
+          echo 'ECDSA2P_MISMATCH_CONTROL_REJECTED=0'
+          exit 2
