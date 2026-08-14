@@ -35,6 +35,7 @@ jobs:
           PY
           cat >> cb-mpc/tests/unit/api/test_ecdsa2pc.cpp <<'CPP'
 
+          #include <fstream>
           namespace {
 
           TEST(ApiEcdsa2pcAlias, SignOutputAliasesKeyBlobV32) {
@@ -68,17 +69,12 @@ jobs:
             buf_t sid2;
             buf_t sig2;
 
-            // Public API aliasing test: the caller-provided output object is also the
-            // storage backing the mem_t key_blob input. sign_common() currently calls
-            // sig_der.free() before parsing key_blob. If aliases are not handled, the
-            // mem_t becomes a dangling view and ASan should report a heap-use-after-free.
             run_2pc(
                 c1, c2,
                 [&] { return coinbase::api::ecdsa_2p::sign(job1, key_blob_1, msg_hash, sid1, key_blob_1); },
                 [&] { return coinbase::api::ecdsa_2p::sign(job2, key_blob_2, msg_hash, sid2, sig2); },
                 rv1, rv2);
 
-            // If execution survives without a sanitizer finding, record the semantic result.
             std::ofstream out("/code/v32-verdict.txt", std::ios::trunc);
             out << "rv1=" << rv1 << " rv2=" << rv2
                 << " p1_output_size=" << key_blob_1.size()
