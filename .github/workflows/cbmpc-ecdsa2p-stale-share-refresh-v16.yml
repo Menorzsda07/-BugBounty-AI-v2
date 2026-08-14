@@ -1,0 +1,117 @@
+name: CBMPC ECDSA2P Stale Share Refresh V16
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-ecdsa2p-stale-share-refresh-v16.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Clone exact current cb-mpc
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout 2369813b8b0507ce20febd1d81ef1708cdbb42d7 >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+
+      - name: Add corrected ECDSA2P stale-share test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          p.write_text(p.read_text().replace('    delete queue.front();','    test_message_buffer_t::free(queue.front());'))
+          PY
+          cat >> cb-mpc/tests/unit/api/test_ecdsa2pc.cpp <<'CPP'
+
+          #include <fstream>
+
+          TEST(ApiEcdsa2pc, StaleShareRefreshIsolationVerdictV16) {
+            auto c1=std::make_shared<mpc_net_context_t>(0);
+            auto c2=std::make_shared<mpc_net_context_t>(1);
+            std::vector<std::shared_ptr<mpc_net_context_t>> peers={c1,c2};
+            c1->init_with_peers(peers); c2->init_with_peers(peers);
+            local_api_transport_t t1(c1),t2(c2);
+            const coinbase::api::job_2p_t job1{party_t::p1,"p1","p2",t1};
+            const coinbase::api::job_2p_t job2{party_t::p2,"p1","p2",t2};
+
+            error_t rv1=UNINITIALIZED_ERROR,rv2=UNINITIALIZED_ERROR;
+            buf_t old1,old2;
+            run_2pc(c1,c2,
+              [&]{return coinbase::api::ecdsa_2p::dkg(job1,curve_id::secp256k1,old1);},
+              [&]{return coinbase::api::ecdsa_2p::dkg(job2,curve_id::secp256k1,old2);},rv1,rv2);
+            ASSERT_EQ(rv1,SUCCESS); ASSERT_EQ(rv2,SUCCESS);
+
+            buf_t fresh1,fresh2;
+            run_2pc(c1,c2,
+              [&]{return coinbase::api::ecdsa_2p::refresh(job1,old1,fresh1);},
+              [&]{return coinbase::api::ecdsa_2p::refresh(job2,old2,fresh2);},rv1,rv2);
+            ASSERT_EQ(rv1,SUCCESS); ASSERT_EQ(rv2,SUCCESS);
+
+            buf_t po,pn;
+            ASSERT_EQ(coinbase::api::ecdsa_2p::get_public_key_compressed(old1,po),SUCCESS);
+            ASSERT_EQ(coinbase::api::ecdsa_2p::get_public_key_compressed(fresh1,pn),SUCCESS);
+            ASSERT_EQ(po,pn);
+
+            buf_t h(32);for(int i=0;i<h.size();i++)h[i]=(uint8_t)(0x20+i);
+            buf_t cs1("v16-control"),cs2("v16-control"),csig1,csig2;
+            run_2pc(c1,c2,
+              [&]{return coinbase::api::ecdsa_2p::sign(job1,fresh1,h,cs1,csig1);},
+              [&]{return coinbase::api::ecdsa_2p::sign(job2,fresh2,h,cs2,csig2);},rv1,rv2);
+            ASSERT_EQ(rv1,SUCCESS); ASSERT_EQ(rv2,SUCCESS); ASSERT_FALSE(csig1.empty());
+
+            error_t a1=UNINITIALIZED_ERROR,a2=UNINITIALIZED_ERROR;
+            error_t b1=UNINITIALIZED_ERROR,b2=UNINITIALIZED_ERROR;
+            int stale_sign_success=0;
+
+            buf_t as1("v16-cross-a"),as2("v16-cross-a"),asig1,asig2;
+            run_2pc(c1,c2,
+              [&]{return coinbase::api::ecdsa_2p::sign(job1,old1,h,as1,asig1);},
+              [&]{return coinbase::api::ecdsa_2p::sign(job2,fresh2,h,as2,asig2);},a1,a2);
+            if(a1==SUCCESS&&a2==SUCCESS&&!asig1.empty()) stale_sign_success++;
+
+            buf_t h2(32);for(int i=0;i<h2.size();i++)h2[i]=(uint8_t)(0x70+i);
+            buf_t bs1("v16-cross-b"),bs2("v16-cross-b"),bsig1,bsig2;
+            run_2pc(c1,c2,
+              [&]{return coinbase::api::ecdsa_2p::sign(job1,fresh1,h2,bs1,bsig1);},
+              [&]{return coinbase::api::ecdsa_2p::sign(job2,old2,h2,bs2,bsig2);},b1,b2);
+            if(b1==SUCCESS&&b2==SUCCESS&&!bsig1.empty()) stale_sign_success++;
+
+            std::ofstream out("/code/v16-verdict.txt",std::ios::trunc);
+            out<<"crossA="<<a1<<","<<a2<<" sig="<<asig1.size()
+               <<" crossB="<<b1<<","<<b2<<" sig="<<bsig1.size()
+               <<" stale_sign_success="<<stale_sign_success<<"\n";
+          }
+          CPP
+
+      - name: Build and run ASAN UBSAN stale-share signing test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 40m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiEcdsa2pc.StaleShareRefreshIsolationVerdictV16' >/tmp/sanitize.log 2>&1
+          status=$?
+          set -e
+          echo "sanitize_exit=$status"
+          if [ -f v16-verdict.txt ]; then cat v16-verdict.txt; else echo 'verdict_missing=1'; fi
+          if [ "$status" -ne 0 ]; then
+            echo 'V16_SANITIZER_OR_TEST_FAILURE=1'
+            tail -n 60 /tmp/sanitize.log
+            exit 1
+          fi
+          ok=$(sed -n 's/.*stale_sign_success=\([0-9][0-9]*\).*/\1/p' v16-verdict.txt)
+          if [ "${ok:-0}" -gt 0 ]; then
+            echo 'ECDSA2P_STALE_SHARE_REFRESH_CANDIDATE=1'
+            exit 2
+          fi
+          echo 'ECDSA2P_STALE_SHARE_REFRESH_CANDIDATE=0'
