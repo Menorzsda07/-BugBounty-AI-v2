@@ -55,7 +55,7 @@ jobs:
             ASSERT_EQ(d1, SUCCESS); ASSERT_EQ(d2, SUCCESS);
 
             buf_t pub;
-            ASSERT_EQ(coinbase::api::eddsa_2p::get_public_key(k1, pub), SUCCESS);
+            ASSERT_EQ(coinbase::api::eddsa_2p::get_public_key_compressed(k1, pub), SUCCESS);
             coinbase::crypto::ecc_point_t Q;
             ASSERT_EQ(Q.from_bin(coinbase::crypto::curve_ed25519, pub), SUCCESS);
             coinbase::crypto::ecc_pub_key_t verify_key(Q);
