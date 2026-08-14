@@ -1,0 +1,145 @@
+name: CBMPC TDH2 AC Policy Relabel V31
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-tdh2-ac-policy-relabel-v31.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Clone current cb-mpc HEAD
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+          echo "tested_commit=$(git rev-parse HEAD)"
+
+      - name: Add public TDH2 AC substitution tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          p.write_text(p.read_text().replace('    delete queue.front();','    test_message_buffer_t::free(queue.front());'))
+          PY
+          cat >> cb-mpc/tests/unit/api/test_tdh2.cpp <<'CPP'
+
+          #include <fstream>
+
+          TEST(ApiTdh2, AcPolicySubstitutionAndRelabelVerdictV31) {
+            constexpr int n = 3;
+            std::vector<std::shared_ptr<mpc_net_context_t>> peers;
+            for (int i = 0; i < n; ++i) peers.push_back(std::make_shared<mpc_net_context_t>(i));
+            for (const auto& p : peers) p->init_with_peers(peers);
+
+            std::vector<std::shared_ptr<local_api_transport_t>> transports;
+            for (const auto& p : peers) transports.push_back(std::make_shared<local_api_transport_t>(p));
+
+            std::vector<std::string> names = {"p0", "p1", "p2"};
+            std::vector<std::string_view> nv = {names[0], names[1], names[2]};
+            const auto leaf = [&](int i) { return access_structure_t::leaf(names[static_cast<size_t>(i)]); };
+            const access_structure_t original = access_structure_t::Threshold(2, {leaf(0), leaf(1), leaf(2)});
+            const std::vector<std::string_view> dkg_quorum = {names[0], names[1]};
+
+            std::vector<buf_t> pks(n), privs(n), sids(n);
+            std::vector<std::vector<buf_t>> pubs(n);
+            std::vector<error_t> rvs;
+            run_mp(peers, [&](int i) {
+              job_mp_t job{static_cast<party_idx_t>(i), nv, *transports[static_cast<size_t>(i)]};
+              return coinbase::api::tdh2::dkg_ac(job, curve_id::secp256k1, sids[static_cast<size_t>(i)],
+                                                 original, dkg_quorum, pks[static_cast<size_t>(i)],
+                                                 pubs[static_cast<size_t>(i)], privs[static_cast<size_t>(i)]);
+            }, rvs);
+            for (auto rv : rvs) ASSERT_EQ(rv, SUCCESS);
+
+            buf_t plaintext(32);
+            for (int i = 0; i < plaintext.size(); ++i) plaintext[i] = static_cast<uint8_t>(0x51 + i);
+            const mem_t label("v31-tdh2-ac");
+            buf_t ct;
+            ASSERT_EQ(coinbase::api::tdh2::encrypt(pks[0], plaintext, label, ct), SUCCESS);
+
+            std::vector<buf_t> partials(n);
+            for (int i = 0; i < n; ++i)
+              ASSERT_EQ(coinbase::api::tdh2::partial_decrypt(privs[static_cast<size_t>(i)], ct, label,
+                                                             partials[static_cast<size_t>(i)]), SUCCESS);
+
+            int tested = 0;
+            int unauthorized_success = 0;
+            int duplicate_success = 0;
+
+            // A weaker 1-of-3 policy must not let any single original 2-of-3 share decrypt.
+            const access_structure_t weaker = access_structure_t::Threshold(1, {leaf(0), leaf(1), leaf(2)});
+            const auto pub_mems = buf_t::to_mems(pubs[0]);
+            for (int i = 0; i < n; ++i) {
+              ++tested;
+              std::vector<std::string_view> pn = {names[static_cast<size_t>(i)]};
+              std::vector<buf_t> one = {partials[static_cast<size_t>(i)]};
+              auto pm = buf_t::to_mems(one);
+              buf_t out;
+              const error_t rv = coinbase::api::tdh2::combine_ac(weaker, pks[0], nv, pub_mems, label, pn, pm, ct, out);
+              if (rv == SUCCESS && out == plaintext) ++unauthorized_success;
+            }
+
+            // Relabel/duplicate one valid partial as two distinct parties, cloning its public share too.
+            for (int src = 0; src < n; ++src) {
+              ++tested;
+              const int other = (src + 1) % n;
+              std::vector<buf_t> forged_pubs = pubs[0];
+              forged_pubs[static_cast<size_t>(other)] = forged_pubs[static_cast<size_t>(src)];
+              auto forged_pub_mems = buf_t::to_mems(forged_pubs);
+              std::vector<std::string_view> forged_names = {names[static_cast<size_t>(src)], names[static_cast<size_t>(other)]};
+              std::vector<buf_t> forged_partials = {partials[static_cast<size_t>(src)], partials[static_cast<size_t>(src)]};
+              auto forged_partial_mems = buf_t::to_mems(forged_partials);
+              buf_t out;
+              const error_t rv = coinbase::api::tdh2::combine_ac(original, pks[0], nv, forged_pub_mems, label,
+                                                                  forged_names, forged_partial_mems, ct, out);
+              if (rv == SUCCESS && out == plaintext) ++duplicate_success;
+            }
+
+            std::ofstream verdict("/code/v31-verdict.txt", std::ios::trunc);
+            verdict << "commit=fdbb60346757271d5e0241f417e55dc8f289573c tested=" << tested
+                    << " unauthorized_success=" << unauthorized_success
+                    << " duplicate_success=" << duplicate_success << "\n";
+          }
+          CPP
+
+      - name: Build and run ASAN UBSAN TDH2 AC tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 40m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiTdh2.AcPolicySubstitutionAndRelabelVerdictV31' >/tmp/sanitize.log 2>&1
+          status=$?
+          set -e
+          echo "sanitize_exit=$status"
+          if [ -f v31-verdict.txt ]; then cat v31-verdict.txt; else echo 'verdict_missing=1'; fi
+          if grep -Eq 'AddressSanitizer|heap-buffer-overflow|stack-buffer-overflow|SEGV|runtime error:' /tmp/sanitize.log; then
+            echo 'TDH2_AC_MEMORY_SAFETY_CANDIDATE=1'
+            tail -n 120 /tmp/sanitize.log
+            exit 2
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo 'V31_TEST_OR_BUILD_FAILURE=1'
+            tail -n 120 /tmp/sanitize.log
+            exit 1
+          fi
+          u=$(sed -n 's/.*unauthorized_success=\([0-9][0-9]*\).*/\1/p' v31-verdict.txt)
+          d=$(sed -n 's/.*duplicate_success=\([0-9][0-9]*\).*/\1/p' v31-verdict.txt)
+          if [ "${u:-0}" -gt 0 ] || [ "${d:-0}" -gt 0 ]; then
+            echo 'TDH2_AC_QUORUM_BYPASS_CANDIDATE=1'
+            exit 2
+          fi
+          echo 'TDH2_AC_QUORUM_BYPASS_CANDIDATE=0'
