@@ -1,0 +1,157 @@
+name: CBMPC ECDSA MP Inner Deser V28
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-ecdsa-mp-inner-deser-v28.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Clone current cb-mpc HEAD
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+          echo "tested_commit=$(git rev-parse HEAD)"
+
+      - name: Add public ECDSA-MP malformed inner-message test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          p.write_text(p.read_text().replace('    delete queue.front();','    test_message_buffer_t::free(queue.front());'))
+          PY
+          cat >> cb-mpc/tests/unit/api/test_ecdsa_mp.cpp <<'CPP'
+
+          #include <fstream>
+          #include <cbmpc/internal/core/convert.h>
+
+          namespace {
+
+          class v28_mutating_transport_t final : public data_transport_i {
+           public:
+            v28_mutating_transport_t(std::shared_ptr<mpc_net_context_t> ctx, bool malicious)
+                : ctx_(std::move(ctx)), malicious_(malicious) {}
+
+            void arm() { armed_ = true; mutated_ = false; }
+            bool mutated() const { return mutated_; }
+
+            error_t send(party_idx_t receiver, mem_t msg) override {
+              if (malicious_ && armed_ && !mutated_) {
+                buf_t first, second;
+                if (coinbase::deser(msg, first, second) == SUCCESS && !first.empty() && !second.empty()) {
+                  // Preserve a valid outer envelope but make the first inner packed message malformed.
+                  buf_t malformed(1);
+                  malformed[0] = 0xff;
+                  buf_t out = coinbase::ser(malformed, second);
+                  ctx_->send(receiver, out);
+                  mutated_ = true;
+                  return SUCCESS;
+                }
+              }
+              ctx_->send(receiver, msg);
+              return SUCCESS;
+            }
+
+            error_t receive(party_idx_t sender, buf_t& msg) override { return ctx_->receive(sender, msg); }
+
+            error_t receive_all(const std::vector<party_idx_t>& senders, std::vector<buf_t>& msgs) override {
+              std::vector<coinbase::mpc::party_idx_t> s;
+              s.reserve(senders.size());
+              for (auto x : senders) s.push_back(static_cast<coinbase::mpc::party_idx_t>(x));
+              return ctx_->receive_all(s, msgs);
+            }
+
+           private:
+            std::shared_ptr<mpc_net_context_t> ctx_;
+            bool malicious_ = false;
+            bool armed_ = false;
+            bool mutated_ = false;
+          };
+
+          }  // namespace
+
+          TEST(ApiEcdsaMp, MalformedInnerPairwiseEnvelopeVerdictV28) {
+            constexpr int n = 2;
+            std::vector<std::shared_ptr<mpc_net_context_t>> peers;
+            for (int i = 0; i < n; ++i) peers.push_back(std::make_shared<mpc_net_context_t>(i));
+            for (const auto& p : peers) p->init_with_peers(peers);
+
+            auto t0 = std::make_shared<v28_mutating_transport_t>(peers[0], true);
+            auto t1 = std::make_shared<v28_mutating_transport_t>(peers[1], false);
+            std::vector<std::shared_ptr<v28_mutating_transport_t>> ts = {t0, t1};
+
+            std::vector<std::string> names = {"p0", "p1"};
+            std::vector<std::string_view> nv = {names[0], names[1]};
+            std::vector<buf_t> keys(n), sids(n), sigs(n);
+            std::vector<error_t> rvs;
+
+            run_mp(peers, [&](int i) {
+              job_mp_t job{static_cast<party_idx_t>(i), nv, *ts[static_cast<size_t>(i)]};
+              return coinbase::api::ecdsa_mp::dkg_additive(job, curve_id::secp256k1,
+                                                           keys[static_cast<size_t>(i)], sids[static_cast<size_t>(i)]);
+            }, rvs);
+            ASSERT_EQ(rvs[0], SUCCESS);
+            ASSERT_EQ(rvs[1], SUCCESS);
+
+            buf_t h(32);
+            for (int i = 0; i < h.size(); ++i) h[i] = static_cast<uint8_t>(0x33 + i);
+            t0->arm();
+
+            run_mp(peers, [&](int i) {
+              job_mp_t job{static_cast<party_idx_t>(i), nv, *ts[static_cast<size_t>(i)]};
+              return coinbase::api::ecdsa_mp::sign_additive(job, keys[static_cast<size_t>(i)], h,
+                                                            /*sig_receiver=*/1, sigs[static_cast<size_t>(i)]);
+            }, rvs);
+
+            const int sign_success = (rvs[0] == SUCCESS && rvs[1] == SUCCESS && !sigs[1].empty()) ? 1 : 0;
+            std::ofstream out("/code/v28-verdict.txt", std::ios::trunc);
+            out << "commit=fdbb60346757271d5e0241f417e55dc8f289573c"
+                << " mutated=" << (t0->mutated() ? 1 : 0)
+                << " rv0=" << rvs[0] << " rv1=" << rvs[1]
+                << " sig_size=" << sigs[1].size()
+                << " sign_success=" << sign_success << "\n";
+          }
+          CPP
+
+      - name: Build and run ASAN UBSAN inner-deser test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 40m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiEcdsaMp.MalformedInnerPairwiseEnvelopeVerdictV28' >/tmp/sanitize.log 2>&1
+          status=$?
+          set -e
+          echo "sanitize_exit=$status"
+          if [ -f v28-verdict.txt ]; then cat v28-verdict.txt; else echo 'verdict_missing=1'; fi
+          if grep -Eq 'AddressSanitizer|heap-buffer-overflow|stack-buffer-overflow|SEGV|runtime error:' /tmp/sanitize.log; then
+            echo 'ECDSA_MP_INNER_DESER_MEMORY_SAFETY_CANDIDATE=1'
+            tail -n 120 /tmp/sanitize.log
+            exit 2
+          fi
+          if [ -f v28-verdict.txt ]; then
+            ok=$(sed -n 's/.*sign_success=\([0-9][0-9]*\).*/\1/p' v28-verdict.txt)
+            mut=$(sed -n 's/.*mutated=\([0-9][0-9]*\).*/\1/p' v28-verdict.txt)
+            if [ "${mut:-0}" -eq 1 ] && [ "${ok:-0}" -eq 1 ]; then
+              echo 'ECDSA_MP_MALFORMED_INNER_ACCEPTED_CANDIDATE=1'
+              exit 2
+            fi
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo 'V28_TEST_OR_BUILD_FAILURE=1'
+            tail -n 120 /tmp/sanitize.log
+            exit 1
+          fi
+          echo 'ECDSA_MP_INNER_DESER_CANDIDATE=0'
