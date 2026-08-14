@@ -1,0 +1,35 @@
+name: CBMPC HD Context Probe V12
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-hd-context-probe-v12.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Clone exact current cb-mpc
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout 2369813b8b0507ce20febd1d81ef1708cdbb42d7 >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+
+      - name: Emit HD public API test construction
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== API TEST ==='
+          sed -n '1,320p' cb-mpc/tests/unit/api/test_hd_keyset_ecdsa_2p.cpp
+          echo '=== BIP32 TYPE ==='
+          sed -n '1,220p' cb-mpc/include/cbmpc/core/bip32_path.h
+          echo '=== HD API HEADER ==='
+          sed -n '1,260p' cb-mpc/include/cbmpc/api/hd_keyset_ecdsa_2p.h
+          echo '=== DERIVE PROTOCOL CONTEXT ==='
+          grep -n -B25 -A120 'derive_sid\|derive_keys' cb-mpc/src/cbmpc/protocol/hd_keyset_ecdsa_2p.cpp || true
