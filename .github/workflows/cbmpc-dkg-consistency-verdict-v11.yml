@@ -1,0 +1,164 @@
+name: CBMPC DKG Consistency Verdict V11
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-dkg-consistency-verdict-v11.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Clone exact cb-mpc HEAD
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout 2369813b8b0507ce20febd1d81ef1708cdbb42d7 >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+
+      - name: Add public-API DKG consistency verdict test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          s=p.read_text().replace('    delete queue.front();','    test_message_buffer_t::free(queue.front());')
+          p.write_text(s)
+          PY
+          cat >> cb-mpc/tests/unit/api/test_ecdsa_mp.cpp <<'CPP'
+
+          #include <chrono>
+          #include <fstream>
+          #include <mutex>
+
+          namespace {
+          struct dkg_v11_state_t {
+            std::atomic<bool> enabled{false};
+            std::atomic<int> send_counter{0};
+            int attacker=0;
+            int target_send=-1;
+            int mode=0;
+            std::atomic<bool> timed_out{false};
+            std::mutex mu;
+            std::vector<std::string> exceptions;
+          };
+
+          class dkg_v11_transport_t final : public coinbase::api::data_transport_i {
+           public:
+            dkg_v11_transport_t(int self, std::shared_ptr<coinbase::testutils::mpc_net_context_t> ctx,
+                                std::shared_ptr<dkg_v11_state_t> st):self_(self),ctx_(std::move(ctx)),st_(std::move(st)){}
+            coinbase::error_t send(coinbase::api::party_idx_t receiver, coinbase::mem_t msg) override {
+              if(st_->enabled.load() && self_==st_->attacker) {
+                int seq=st_->send_counter.fetch_add(1);
+                if(seq==st_->target_send && msg.size>0) {
+                  coinbase::buf_t b(msg);
+                  int pos=0;
+                  switch(st_->mode) {
+                    case 0: pos=0; break;
+                    case 1: pos=b.size()/4; break;
+                    case 2: pos=b.size()/2; break;
+                    case 3: pos=(b.size()*3)/4; break;
+                    case 4: pos=b.size()-1; break;
+                    case 5: if(b.size()>1) b=coinbase::buf_t(b.take(b.size()-1)); ctx_->send(receiver,b); return SUCCESS;
+                    default: break;
+                  }
+                  if(pos<0)pos=0; if(pos>=b.size())pos=b.size()-1;
+                  b[pos]^=(uint8_t)(0x80u | (1u << (st_->mode%7)));
+                  ctx_->send(receiver,b); return SUCCESS;
+                }
+              }
+              ctx_->send(receiver,msg); return SUCCESS;
+            }
+            coinbase::error_t receive(coinbase::api::party_idx_t sender, coinbase::buf_t& msg) override { return ctx_->receive(sender,msg); }
+            coinbase::error_t receive_all(const std::vector<coinbase::api::party_idx_t>& senders,std::vector<coinbase::buf_t>& msgs) override {
+              std::vector<coinbase::mpc::party_idx_t> s; for(auto x:senders)s.push_back((coinbase::mpc::party_idx_t)x); return ctx_->receive_all(s,msgs);
+            }
+           private:
+            int self_; std::shared_ptr<coinbase::testutils::mpc_net_context_t> ctx_; std::shared_ptr<dkg_v11_state_t> st_;
+          };
+
+          template<typename F>
+          static void run_dkg_v11(const std::vector<std::shared_ptr<coinbase::testutils::mpc_net_context_t>>& peers,F&& f,
+                                  std::vector<coinbase::error_t>& rvs,const std::shared_ptr<dkg_v11_state_t>& st){
+            for(auto&p:peers)p->reset(); rvs.assign(peers.size(),UNINITIALIZED_ERROR); st->timed_out.store(false);
+            {std::lock_guard<std::mutex>lk(st->mu);st->exceptions.clear();}
+            std::atomic<bool> abort_once{false},done{false}; std::vector<std::thread> th;
+            for(size_t i=0;i<peers.size();i++) th.emplace_back([&,i]{
+              try{rvs[i]=f((int)i);}catch(const std::exception&e){{std::lock_guard<std::mutex>lk(st->mu);st->exceptions.push_back(e.what());}rvs[i]=E_GENERAL;}catch(...){{std::lock_guard<std::mutex>lk(st->mu);st->exceptions.push_back("non-std exception");}rvs[i]=E_GENERAL;}
+              if(rvs[i]&&!abort_once.exchange(true))for(auto&p:peers)p->abort();
+            });
+            std::thread wd([&]{for(int k=0;k<400&&!done.load();k++)std::this_thread::sleep_for(std::chrono::milliseconds(25));if(!done.load()){st->timed_out.store(true);if(!abort_once.exchange(true))for(auto&p:peers)p->abort();}});
+            for(auto&t:th)t.join(); done.store(true); wd.join();
+          }
+          }
+
+          TEST(ApiEcdsaMp, DkgConsistencyVerdictV11) {
+            constexpr int n=3; auto st=std::make_shared<dkg_v11_state_t>();
+            std::vector<std::shared_ptr<coinbase::testutils::mpc_net_context_t>> peers; for(int i=0;i<n;i++)peers.push_back(std::make_shared<coinbase::testutils::mpc_net_context_t>(i)); for(auto&p:peers)p->init_with_peers(peers);
+            std::vector<std::shared_ptr<dkg_v11_transport_t>> tr; for(int i=0;i<n;i++)tr.push_back(std::make_shared<dkg_v11_transport_t>(i,peers[i],st));
+            std::vector<std::string> names={"p0","p1","p2"}; std::vector<std::string_view> nv={names[0],names[1],names[2]};
+            std::vector<coinbase::buf_t> keys(n),sids(n); std::vector<coinbase::error_t> rvs;
+
+            st->enabled.store(false); st->send_counter.store(0);
+            run_dkg_v11(peers,[&](int i){coinbase::api::job_mp_t job{(coinbase::api::party_idx_t)i,nv,*tr[i]};return coinbase::api::ecdsa_mp::dkg_additive(job,coinbase::api::curve_id::secp256k1,keys[i],sids[i]);},rvs,st);
+            for(auto rv:rvs)ASSERT_EQ(rv,SUCCESS);
+            coinbase::buf_t p0,p1,p2; ASSERT_EQ(coinbase::api::ecdsa_mp::get_public_key_compressed(keys[0],p0),SUCCESS); ASSERT_EQ(coinbase::api::ecdsa_mp::get_public_key_compressed(keys[1],p1),SUCCESS); ASSERT_EQ(coinbase::api::ecdsa_mp::get_public_key_compressed(keys[2],p2),SUCCESS); ASSERT_EQ(p0,p1); ASSERT_EQ(p1,p2);
+
+            st->enabled.store(true); st->target_send=-1; st->send_counter.store(0);
+            std::vector<coinbase::buf_t> base_keys(n),base_sids(n);
+            run_dkg_v11(peers,[&](int i){coinbase::api::job_mp_t job{(coinbase::api::party_idx_t)i,nv,*tr[i]};return coinbase::api::ecdsa_mp::dkg_additive(job,coinbase::api::curve_id::secp256k1,base_keys[i],base_sids[i]);},rvs,st);
+            for(auto rv:rvs)ASSERT_EQ(rv,SUCCESS);
+            int sends=st->send_counter.load(); int tested=std::min(sends,24);
+            int divergent=0, all_success=0, timeout_cases=0, exception_cases=0;
+
+            for(int sn=0;sn<tested;sn++) for(int mode=0;mode<6;mode++) {
+              std::vector<coinbase::buf_t> ks(n),ss(n); st->target_send=sn;st->mode=mode;st->send_counter.store(0);
+              run_dkg_v11(peers,[&](int i){coinbase::api::job_mp_t job{(coinbase::api::party_idx_t)i,nv,*tr[i]};return coinbase::api::ecdsa_mp::dkg_additive(job,coinbase::api::curve_id::secp256k1,ks[i],ss[i]);},rvs,st);
+              bool all=true;for(auto rv:rvs)all&=(rv==SUCCESS);
+              bool exc=false;{std::lock_guard<std::mutex>lk(st->mu);exc=!st->exceptions.empty();}
+              if(exc) exception_cases++; if(st->timed_out.load()) timeout_cases++;
+              if(all){
+                all_success++;
+                coinbase::buf_t q0,q1,q2;
+                auto a=coinbase::api::ecdsa_mp::get_public_key_compressed(ks[0],q0);
+                auto b=coinbase::api::ecdsa_mp::get_public_key_compressed(ks[1],q1);
+                auto c=coinbase::api::ecdsa_mp::get_public_key_compressed(ks[2],q2);
+                bool same=(a==SUCCESS&&b==SUCCESS&&c==SUCCESS&&q0==q1&&q1==q2);
+                if(!same) divergent++;
+              }
+            }
+            std::ofstream out("/code/dkg-verdict.txt",std::ios::trunc);
+            out << "tested=" << tested*6 << " all_success=" << all_success << " divergent_success=" << divergent
+                << " timeout_cases=" << timeout_cases << " exception_cases=" << exception_cases << "\n";
+          }
+          CPP
+
+      - name: Build and run ASAN UBSAN DKG verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 40m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiEcdsaMp.DkgConsistencyVerdictV11' >/tmp/sanitize.log 2>&1
+          status=$?
+          set -e
+          echo "sanitize_exit=$status"
+          if [ -f dkg-verdict.txt ]; then cat dkg-verdict.txt; else echo "verdict_missing=1"; fi
+          if [ "$status" -ne 0 ]; then
+            echo "DKG_SANITIZER_FAILURE=1"
+            tail -n 50 /tmp/sanitize.log
+            exit 1
+          fi
+          div=$(sed -n 's/.*divergent_success=\([0-9][0-9]*\).*/\1/p' dkg-verdict.txt)
+          if [ "${div:-0}" -gt 0 ]; then
+            echo "DKG_CONSISTENCY_CANDIDATE=1"
+            exit 2
+          fi
+          echo "DKG_CONSISTENCY_CANDIDATE=0"
