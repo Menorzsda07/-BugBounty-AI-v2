@@ -1,0 +1,125 @@
+name: CBMPC Sign Alias UAF Family V33
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-sign-alias-uaf-family-v33.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Clone current cb-mpc HEAD
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+          echo "tested_commit=$(git rev-parse HEAD)"
+
+      - name: Add Schnorr and EdDSA public API alias tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          p.write_text(p.read_text().replace('    delete queue.front();','    test_message_buffer_t::free(queue.front());'))
+          PY
+
+          cat >> cb-mpc/tests/unit/api/test_schnorr2pc.cpp <<'CPP'
+
+          TEST(ApiSchnorr2pcAliasV33, SignOutputAliasesKeyBlob) {
+            auto c1 = std::make_shared<mpc_net_context_t>(0);
+            auto c2 = std::make_shared<mpc_net_context_t>(1);
+            std::vector<std::shared_ptr<mpc_net_context_t>> peers = {c1, c2};
+            c1->init_with_peers(peers);
+            c2->init_with_peers(peers);
+            local_api_transport_t t1(c1), t2(c2);
+            const coinbase::api::job_2p_t job1{party_t::p1, "p1", "p2", t1};
+            const coinbase::api::job_2p_t job2{party_t::p2, "p1", "p2", t2};
+            buf_t k1, k2;
+            error_t rv1 = UNINITIALIZED_ERROR, rv2 = UNINITIALIZED_ERROR;
+            run_2pc(c1, c2,
+              [&] { return coinbase::api::schnorr_2p::dkg(job1, curve_id::secp256k1, k1); },
+              [&] { return coinbase::api::schnorr_2p::dkg(job2, curve_id::secp256k1, k2); }, rv1, rv2);
+            ASSERT_EQ(rv1, SUCCESS); ASSERT_EQ(rv2, SUCCESS); ASSERT_GT(k1.size(), 36);
+            buf_t msg(32); for (int i=0;i<32;i++) msg[i]=static_cast<uint8_t>(i+1);
+            buf_t sig2;
+            run_2pc(c1, c2,
+              [&] { return coinbase::api::schnorr_2p::sign(job1, k1, msg, k1); },
+              [&] { return coinbase::api::schnorr_2p::sign(job2, k2, msg, sig2); }, rv1, rv2);
+          }
+          CPP
+
+          cat >> cb-mpc/tests/unit/api/test_eddsa2pc.cpp <<'CPP'
+
+          TEST(ApiEdDSA2pcAliasV33, SignOutputAliasesKeyBlob) {
+            auto c1 = std::make_shared<mpc_net_context_t>(0);
+            auto c2 = std::make_shared<mpc_net_context_t>(1);
+            std::vector<std::shared_ptr<mpc_net_context_t>> peers = {c1, c2};
+            c1->init_with_peers(peers);
+            c2->init_with_peers(peers);
+            local_api_transport_t t1(c1), t2(c2);
+            const coinbase::api::job_2p_t job1{party_t::p1, "p1", "p2", t1};
+            const coinbase::api::job_2p_t job2{party_t::p2, "p1", "p2", t2};
+            buf_t k1, k2;
+            error_t rv1 = UNINITIALIZED_ERROR, rv2 = UNINITIALIZED_ERROR;
+            run_2pc(c1, c2,
+              [&] { return coinbase::api::eddsa_2p::dkg(job1, curve_id::ed25519, k1); },
+              [&] { return coinbase::api::eddsa_2p::dkg(job2, curve_id::ed25519, k2); }, rv1, rv2);
+            ASSERT_EQ(rv1, SUCCESS); ASSERT_EQ(rv2, SUCCESS); ASSERT_GT(k1.size(), 36);
+            buf_t msg(32); for (int i=0;i<32;i++) msg[i]=static_cast<uint8_t>(0x80+i);
+            buf_t sig2;
+            run_2pc(c1, c2,
+              [&] { return coinbase::api::eddsa_2p::sign(job1, k1, msg, k1); },
+              [&] { return coinbase::api::eddsa_2p::sign(job2, k2, msg, sig2); }, rv1, rv2);
+          }
+          CPP
+
+      - name: Build sanitizer image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+
+      - name: Run Schnorr alias test under ASAN UBSAN
+        shell: bash
+        run: |
+          set +e
+          cd cb-mpc
+          timeout 20m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiSchnorr2pcAliasV33.SignOutputAliasesKeyBlob' >/tmp/schnorr.log 2>&1
+          status=$?
+          echo "schnorr_sanitize_exit=$status"
+          if grep -Eqi 'heap-use-after-free|AddressSanitizer' /tmp/schnorr.log; then
+            echo 'SCHNORR2P_ALIAS_UAF_CONFIRMED=1'
+            grep -Ein -C 7 'heap-use-after-free|AddressSanitizer' /tmp/schnorr.log | head -n 100 || true
+          else
+            echo 'SCHNORR2P_ALIAS_UAF_CONFIRMED=0'
+            tail -n 80 /tmp/schnorr.log
+          fi
+          exit 0
+
+      - name: Run EdDSA alias test under ASAN UBSAN
+        shell: bash
+        run: |
+          set +e
+          cd cb-mpc
+          timeout 20m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiEdDSA2pcAliasV33.SignOutputAliasesKeyBlob' >/tmp/eddsa.log 2>&1
+          status=$?
+          echo "eddsa_sanitize_exit=$status"
+          if grep -Eqi 'heap-use-after-free|AddressSanitizer' /tmp/eddsa.log; then
+            echo 'EDDSA2P_ALIAS_UAF_CONFIRMED=1'
+            grep -Ein -C 7 'heap-use-after-free|AddressSanitizer' /tmp/eddsa.log | head -n 100 || true
+          else
+            echo 'EDDSA2P_ALIAS_UAF_CONFIRMED=0'
+            tail -n 80 /tmp/eddsa.log
+          fi
