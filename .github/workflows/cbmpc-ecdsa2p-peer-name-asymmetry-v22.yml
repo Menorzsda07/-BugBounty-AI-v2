@@ -1,0 +1,103 @@
+name: CBMPC ECDSA2P Peer Name Asymmetry V22
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-ecdsa2p-peer-name-asymmetry-v22.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Clone current cb-mpc HEAD
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+
+      - name: Add peer-name asymmetry control test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/tests/utils/local_network/channel.cpp')
+          p.write_text(p.read_text().replace('    delete queue.front();','    test_message_buffer_t::free(queue.front());'))
+          PY
+          cat >> cb-mpc/tests/unit/api/test_ecdsa2pc.cpp <<'CPP'
+
+          #include <fstream>
+
+          TEST(ApiEcdsa2pc, PeerNameAsymmetryVerdictV22) {
+            auto c1=std::make_shared<mpc_net_context_t>(0);
+            auto c2=std::make_shared<mpc_net_context_t>(1);
+            std::vector<std::shared_ptr<mpc_net_context_t>> peers={c1,c2};
+            c1->init_with_peers(peers);c2->init_with_peers(peers);
+            local_api_transport_t t1(c1),t2(c2);
+            const coinbase::api::job_2p_t setup1{party_t::p1,"alice","bob",t1};
+            const coinbase::api::job_2p_t setup2{party_t::p2,"alice","bob",t2};
+            error_t rv1=UNINITIALIZED_ERROR,rv2=UNINITIALIZED_ERROR;
+            buf_t k1,k2;
+            run_2pc(c1,c2,
+              [&]{return coinbase::api::ecdsa_2p::dkg(setup1,curve_id::secp256k1,k1);},
+              [&]{return coinbase::api::ecdsa_2p::dkg(setup2,curve_id::secp256k1,k2);},rv1,rv2);
+            ASSERT_EQ(rv1,SUCCESS);ASSERT_EQ(rv2,SUCCESS);
+
+            buf_t h(32);for(int i=0;i<h.size();i++)h[i]=(uint8_t)(0xB1+i);
+
+            // Case A: P2 identity differs only on P2's view.
+            const coinbase::api::job_2p_t p2m1{party_t::p1,"alice","bob",t1};
+            const coinbase::api::job_2p_t p2m2{party_t::p2,"alice","mallory",t2};
+            buf_t a_sid1,a_sid2,a_sig1,a_sig2;
+            error_t a1=UNINITIALIZED_ERROR,a2=UNINITIALIZED_ERROR;
+            run_2pc(c1,c2,
+              [&]{return coinbase::api::ecdsa_2p::sign(p2m1,k1,h,a_sid1,a_sig1);},
+              [&]{return coinbase::api::ecdsa_2p::sign(p2m2,k2,h,a_sid2,a_sig2);},a1,a2);
+            int p2_mismatch_success=(a1==SUCCESS&&a2==SUCCESS&&!a_sig1.empty())?1:0;
+
+            // Case B: P1 identity differs only on P2's view.
+            const coinbase::api::job_2p_t p1m1{party_t::p1,"alice","bob",t1};
+            const coinbase::api::job_2p_t p1m2{party_t::p2,"mallory","bob",t2};
+            buf_t b_sid1,b_sid2,b_sig1,b_sig2;
+            error_t b1=UNINITIALIZED_ERROR,b2=UNINITIALIZED_ERROR;
+            run_2pc(c1,c2,
+              [&]{return coinbase::api::ecdsa_2p::sign(p1m1,k1,h,b_sid1,b_sig1);},
+              [&]{return coinbase::api::ecdsa_2p::sign(p1m2,k2,h,b_sid2,b_sig2);},b1,b2);
+            int p1_mismatch_success=(b1==SUCCESS&&b2==SUCCESS&&!b_sig1.empty())?1:0;
+
+            std::ofstream out("/code/v22-verdict.txt",std::ios::trunc);
+            out<<"p2_mismatch_rv="<<a1<<","<<a2<<" p2_mismatch_success="<<p2_mismatch_success
+               <<" p1_mismatch_rv="<<b1<<","<<b2<<" p1_mismatch_success="<<p1_mismatch_success<<"\n";
+          }
+          CPP
+
+      - name: Build and run ASAN UBSAN asymmetry control
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 40m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiEcdsa2pc.PeerNameAsymmetryVerdictV22' >/tmp/sanitize.log 2>&1
+          status=$?
+          set -e
+          echo "sanitize_exit=$status"
+          if [ -f v22-verdict.txt ]; then cat v22-verdict.txt; else echo 'verdict_missing=1'; fi
+          if [ "$status" -ne 0 ]; then
+            echo 'V22_SANITIZER_OR_TEST_FAILURE=1'
+            tail -n 60 /tmp/sanitize.log
+            exit 1
+          fi
+          p2=$(sed -n 's/.*p2_mismatch_success=\([0-9][0-9]*\).*/\1/p' v22-verdict.txt)
+          p1=$(sed -n 's/.*p1_mismatch_success=\([0-9][0-9]*\).*/\1/p' v22-verdict.txt)
+          if [ "${p2:-0}" -eq 1 ] && [ "${p1:-1}" -eq 0 ]; then
+            echo 'PEER_NAME_BINDING_ASYMMETRY_CONFIRMED=1'
+            exit 2
+          fi
+          echo 'PEER_NAME_BINDING_ASYMMETRY_CONFIRMED=0'
