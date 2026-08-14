@@ -1,0 +1,133 @@
+name: CBMPC PVE Batch Q Count OOB V27
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-pve-batch-q-count-oob-v27.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Clone current cb-mpc HEAD
+        run: |
+          set -euo pipefail
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+          echo "tested_commit=$(git rev-parse HEAD)"
+
+      - name: Add malformed PVE batch public-API test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >> cb-mpc/tests/unit/api/test_pve_batch_single_recipient.cpp <<'CPP'
+
+          #include <fstream>
+          #include <cstring>
+          #include <cbmpc/internal/core/convert.h>
+          #include <cbmpc/internal/protocol/pve_base.h>
+
+          namespace {
+          struct v27_outer_blob_t {
+            uint32_t version = 1;
+            uint32_t batch_count = 1;
+            coinbase::buf_t ct;
+            void convert(coinbase::converter_t& c) { c.convert(version, batch_count, ct); }
+          };
+
+          static coinbase::buf_t v27_build_inner(const std::vector<coinbase::crypto::ecc_point_t>& qs,
+                                                  coinbase::mem_t label,
+                                                  const coinbase::buf_t& first_c) {
+            const coinbase::buf128_t b = coinbase::buf128_t::zero();
+            coinbase::buf_t L(label);
+            coinbase::buf_t empty;
+            coinbase::buf_t r0(32);
+            std::memset(r0.data(), 0, 32);
+
+            auto run = [&](coinbase::converter_t& cv) {
+              auto qcopy = qs;
+              auto lcopy = L;
+              auto bcopy = b;
+              cv.convert(qcopy, lcopy, bcopy);
+              for (int i = 0; i < coinbase::mpc::ec_pve_batch_t::kappa; ++i) {
+                coinbase::buf_t xbin;
+                coinbase::buf_t r;
+                coinbase::buf_t c;
+                if (i == 0) {
+                  r = r0;
+                  c = first_c;
+                }
+                cv.convert(xbin, r, c);
+              }
+            };
+
+            coinbase::converter_t sizer(true);
+            run(sizer);
+            coinbase::buf_t out(sizer.get_offset());
+            coinbase::converter_t writer(out.data());
+            run(writer);
+            return out;
+          }
+          }  // namespace
+
+          TEST(ApiPveBatch, MalformedInnerQCountPublicDecryptVerdictV27) {
+            using coinbase::buf_t;
+            using coinbase::api::curve_id;
+
+            buf_t ek, dk;
+            ASSERT_EQ(coinbase::api::pve::generate_base_pke_ecies_p256_keypair(ek, dk), SUCCESS);
+
+            const buf_t label("v27-label");
+            std::vector<coinbase::crypto::ecc_point_t> empty_qs;
+            const buf_t inner_label = coinbase::mpc::genPVELabelWithPoint(label, empty_qs);
+
+            buf_t plain(32);
+            buf_t rho(32);
+            std::memset(plain.data(), 0, 32);
+            std::memset(rho.data(), 0, 32);
+            buf_t valid_base_ct;
+            ASSERT_EQ(coinbase::api::pve::base_pke_default().encrypt(ek, inner_label, plain, rho, valid_base_ct), SUCCESS);
+            ASSERT_FALSE(valid_base_ct.empty());
+
+            v27_outer_blob_t outer;
+            outer.ct = v27_build_inner(empty_qs, label, valid_base_ct);
+            buf_t malicious = coinbase::convert(outer);
+
+            std::vector<buf_t> out_xs;
+            const coinbase::error_t rv = coinbase::api::pve::decrypt_batch(
+                curve_id::secp256k1, dk, ek, malicious, label, out_xs);
+
+            std::ofstream out("/code/v27-verdict.txt", std::ios::trunc);
+            out << "decrypt_returned=1 rv=" << rv << " out_count=" << out_xs.size() << "\n";
+          }
+          CPP
+
+      - name: Build and run ASAN UBSAN PVE malformed-count test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/image-build.log 2>&1
+          set +e
+          timeout 40m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc 'make sanitize filter=ApiPveBatch.MalformedInnerQCountPublicDecryptVerdictV27' >/tmp/sanitize.log 2>&1
+          status=$?
+          set -e
+          echo "sanitize_exit=$status"
+          if [ -f v27-verdict.txt ]; then cat v27-verdict.txt; else echo 'verdict_missing=1'; fi
+          if grep -Eq 'AddressSanitizer|heap-buffer-overflow|SEGV|runtime error:' /tmp/sanitize.log; then
+            echo 'PVE_PUBLIC_DECRYPT_MEMORY_SAFETY_CANDIDATE=1'
+            tail -n 100 /tmp/sanitize.log
+            exit 2
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo 'V27_TEST_OR_BUILD_FAILURE=1'
+            tail -n 100 /tmp/sanitize.log
+            exit 1
+          fi
+          echo 'PVE_PUBLIC_DECRYPT_MEMORY_SAFETY_CANDIDATE=0'
