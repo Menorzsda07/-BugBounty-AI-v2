@@ -1,0 +1,55 @@
+name: Bugcrowd Skyscanner Web Bundle Recon V24
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-web-bundle-recon-v24.yml'
+  workflow_dispatch:
+
+jobs:
+  web-bundle-recon:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Inspect a small fixed set of same-origin web bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-Web-Static/1.0'
+          BASE='https://www.skyscanner.net'
+          mkdir -p /tmp/js
+
+          curl -sS --max-time 25 -H "$HDR" -H "User-Agent: $UA" -D /tmp/root.h -o /tmp/root.html "$BASE/" || true
+          echo '=== ROOT STATUS ==='
+          grep -Ei '^(HTTP/|content-type:|location:|x-service|x-gateway)' /tmp/root.h | head -n 30 || true
+          echo "ROOT_BYTES=$(wc -c < /tmp/root.html 2>/dev/null || echo 0)"
+
+          python3 - <<'PY' >/tmp/scripts.txt
+          import re,html
+          raw=open('/tmp/root.html','r',errors='replace').read()
+          vals=re.findall(r'<script[^>]+src=["\']([^"\']+)',raw,re.I)
+          seen=[]
+          for x in vals:
+              x=html.unescape(x)
+              if x.startswith('//www.skyscanner.net'): x='https:'+x
+              elif x.startswith('/'): x='https://www.skyscanner.net'+x
+              elif x.startswith('https://www.skyscanner.net'): pass
+              else: continue
+              if x not in seen: seen.append(x)
+          print('\n'.join(seen[:10]))
+          PY
+          echo '=== SAME-ORIGIN SCRIPT COUNT/URLS ==='
+          cat /tmp/scripts.txt
+
+          i=0
+          while IFS= read -r u; do
+            [ -n "$u" ] || continue
+            i=$((i+1))
+            curl -sS --max-time 25 -H "$HDR" -H "User-Agent: $UA" -o "/tmp/js/$i.js" "$u" || true
+          done </tmp/scripts.txt
+
+          echo '=== SECURITY/API ROUTE STRINGS ==='
+          grep -RIEo '.{0,100}(saved-experience-api|price-alerts|traveller-auth-service|anonymous-auth-service|/g/[A-Za-z0-9_./?=&-]+|oauth/redirect|account/login|profile/user/export|graphql|client_id|redirect_uri|returnUrl|price.?alert|saved.?list).{0,180}' /tmp/js /tmp/root.html 2>/dev/null \
+            | head -n 1200 || true
+          echo 'V24_WEB_BUNDLE_RECON_DONE=1'
