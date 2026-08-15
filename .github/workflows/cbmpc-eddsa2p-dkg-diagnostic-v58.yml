@@ -1,0 +1,97 @@
+name: CBMPC EdDSA2P DKG Diagnostic V58
+on:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-eddsa2p-dkg-diagnostic-v58.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  dkg-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Fetch probe and exact upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/Menorzsda07/-BugBounty-AI-v2.git audit >/dev/null 2>&1
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+          echo "V58_TESTED_COMMIT=$(git rev-parse HEAD)"
+          cd ..
+          mkdir -p cb-mpc/poc-v58
+          cp audit/pocs/cbmpc_ecdsa2p_dkg_transport_mutation_v56.cpp cb-mpc/poc-v58/v58.cpp
+          cp audit/pocs/cbmpc_ecdsa2p_dkg_transport_mutation_v56_CMakeLists.txt cb-mpc/poc-v58/CMakeLists.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/poc-v58/v58.cpp')
+          s=p.read_text()
+          s=s.replace('<cbmpc/api/ecdsa_2p.h>','<cbmpc/api/eddsa_2p.h>')
+          s=s.replace('coinbase::api::ecdsa_2p','coinbase::api::eddsa_2p')
+          s=s.replace('curve_id::secp256k1','curve_id::ed25519')
+          s=s.replace('V56_','V58_')
+          p.write_text(s)
+          c=Path('cb-mpc/poc-v58/CMakeLists.txt')
+          t=c.read_text()
+          t=t.replace('cbmpc-ecdsa2p-dkg-v56','cbmpc-eddsa2p-dkg-v58')
+          t=t.replace('cbmpc_ecdsa2p_dkg_transport_mutation_v56.cpp','v58.cpp')
+          t=t.replace('v56','v58')
+          c.write_text(t)
+          PY
+          if grep -q 'include-internal\|cbmpc/internal' cb-mpc/poc-v58/v58.cpp; then
+            echo 'V58_PUBLIC_ONLY_SOURCE_CHECK=0'; exit 1
+          fi
+          echo 'V58_PUBLIC_ONLY_SOURCE_CHECK=1'
+
+      - name: Build image
+        shell: bash
+        run: cd cb-mpc && make image >/tmp/v58-image.log 2>&1
+
+      - name: Build and run diagnostic without masking verdict
+        shell: bash
+        run: |
+          set -uo pipefail
+          cd cb-mpc
+          set +e
+          timeout 45m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc '
+            set -euo pipefail
+            cd /code
+            SAN="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize=enum"
+            cmake -B build/Debug -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF \
+              -DCMAKE_C_FLAGS="$SAN" -DCMAKE_CXX_FLAGS="$SAN" \
+              -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+              -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+            cmake --build build/Debug -- -j2
+            scripts/install.sh --mode public --build-type Debug --prefix /code/build/install/v58
+            test -d /code/build/install/v58/include/cbmpc/api
+            test ! -d /code/build/install/v58/include/cbmpc/internal
+            cmake -S /code/poc-v58 -B /code/build/poc-v58 \
+              -DCMAKE_BUILD_TYPE=Debug -DCBMPC_REPO_ROOT=/code \
+              -DCBMPC_SOURCE_DIR=/code/build/install/v58
+            cmake --build /code/build/poc-v58 -- -j2
+            set +e
+            ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:abort_on_error=1" \
+            UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1" \
+              /code/build/poc-v58/cbmpc-eddsa2p-dkg-v58
+            echo "V58_TARGET_EXIT=$?"
+            exit 0
+          ' > /tmp/v58.log 2>&1
+          outer=$?
+          set -e
+          echo "V58_OUTER_EXIT=$outer"
+          cat /tmp/v58.log
+          if grep -Eq 'ERROR: AddressSanitizer|runtime error:|UndefinedBehaviorSanitizer|heap-use-after-free|heap-buffer-overflow|stack-buffer-overflow|global-buffer-overflow' /tmp/v58.log; then
+            echo 'V58_SANITIZER_SIGNAL=1'
+          else
+            echo 'V58_SANITIZER_SIGNAL=0'
+          fi
+          if grep -q 'V58_DKG_INTEGRITY_CANDIDATE=1' /tmp/v58.log; then
+            echo 'V58_INTEGRITY_SIGNAL=1'
+          else
+            echo 'V58_INTEGRITY_SIGNAL=0'
+          fi
+          echo 'V58_DIAGNOSTIC_COMPLETE=1'
+          exit 0
