@@ -1,0 +1,46 @@
+name: Bugcrowd Skyscanner Saved DTOs V22
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-saved-dtos-v22.yml'
+  workflow_dispatch:
+
+jobs:
+  saved-dtos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Decompile security-relevant Saved and Price Alert DTOs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/jadx" "$PWD/classes"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          curl -fsSL --retry 2 --max-time 60 -o /tmp/jadx.zip 'https://github.com/skylot/jadx/releases/download/v1.5.5/jadx-1.5.5.zip'
+          unzip -q /tmp/jadx.zip -d jadx
+          chmod +x jadx/bin/jadx
+
+          extract() {
+            cls="$1"; tag="$2"
+            echo "=== $cls ==="
+            jadx/bin/jadx --no-res --threads-count 2 --single-class "$cls" --single-class-output "classes/$tag.java" "$APK" >"/tmp/$tag.log" 2>&1 || true
+            tail -n 15 "/tmp/$tag.log" || true
+            [ -f "classes/$tag.java" ] && sed -n '1,950p' "classes/$tag.java" || true
+          }
+
+          extract 'net.skyscanner.savedexperienceapi.v2.DeleteItemRequestDto' delete_item
+          extract 'net.skyscanner.savedexperienceapi.v2.SaveItemRequestDto' save_item
+          extract 'net.skyscanner.savedexperienceapi.v2.ListItemDto' list_item
+          extract 'net.skyscanner.savedexperienceapi.v2.UpdateFlightItineraryItemPriceAlertRequestDto' update_alert
+          extract 'net.skyscanner.savedexperienceapi.v2.UnsubscribeFlightItineraryItemPriceAlertRequestDto' unsub_alert
+          extract 'net.skyscanner.savedexperienceapi.v2.UnsubscribeAllFlightItineraryItemPriceAlertsRequestDto' unsub_all
+          extract 'net.skyscanner.pricealerts.dto.PriceAlertsDto' price_alerts_dto
+          extract 'net.skyscanner.pricealerts.dto.PriceAlertCreationDto' price_alert_create
+
+          echo '=== IDENTIFIER / OWNERSHIP FIELDS ==='
+          grep -RInE '(id|Id|uuid|UUID|item|alert|list|user|account|traveller|owner|itinerary|matching|token|email|price)' classes | head -n 1800 || true
+          echo 'V22_SAVED_DTOS_DONE=1'
