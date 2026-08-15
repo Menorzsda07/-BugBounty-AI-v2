@@ -1,0 +1,170 @@
+name: Bugcrowd Skyscanner Explore AI Passive Contract V48
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-explore-ai-passive-v48.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  explore-ai-passive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Passively map the public Explore AI page and same-scope assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-ExploreAI-Passive/1.0'
+          URL='https://www.skyscanner.net/explore-ai'
+          mkdir -p /tmp/v48-assets
+          echo 'V48_ACTIVE_PROMPTS=0'
+          echo 'V48_MAX_TARGET_REQUESTS=9'
+
+          code=$(curl -sS --max-time 30 --max-redirs 0 \
+            -H "$HDR" -H "User-Agent: $UA" \
+            -H 'Accept: text/html,application/xhtml+xml' \
+            -D /tmp/v48.h -o /tmp/v48.html -w '%{http_code}' "$URL" || true)
+          echo "V48_PAGE_HTTP=$code"
+          echo "V48_PAGE_BYTES=$(wc -c </tmp/v48.html)"
+          echo "V48_PAGE_SHA256=$(sha256sum /tmp/v48.html | cut -d' ' -f1)"
+
+          python3 - <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          from urllib.parse import urljoin, urlsplit
+          import re
+
+          base = "https://www.skyscanner.net/explore-ai"
+          headers = Path("/tmp/v48.h").read_text(errors="replace")
+          body = Path("/tmp/v48.html").read_text(errors="replace")
+
+          locations = re.findall(r"^location:\s*(.+?)\s*$", headers, re.I | re.M)
+          location = locations[-1] if locations else ""
+          if location:
+              u = urlsplit(urljoin(base, location))
+              print(f"V48_LOCATION_HOST={u.hostname or '<none>'}")
+              print(f"V48_LOCATION_PATH={u.path or '/'}")
+          else:
+              print("V48_LOCATION_HOST=<none>")
+              print("V48_LOCATION_PATH=<none>")
+
+          for name in ("content-security-policy", "strict-transport-security",
+                       "x-content-type-options", "referrer-policy",
+                       "permissions-policy", "x-frame-options"):
+              present = bool(re.search(rf"^{re.escape(name)}:", headers, re.I | re.M))
+              print(f"V48_HEADER_{name.upper().replace('-', '_')}={present}")
+
+          class Parser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.scripts, self.forms, self.links = [], [], []
+              def handle_starttag(self, tag, attrs):
+                  d = dict(attrs)
+                  if tag == "script" and d.get("src"):
+                      self.scripts.append(d["src"])
+                  elif tag == "form":
+                      self.forms.append((d.get("method", "get"), d.get("action", "")))
+                  elif tag == "link" and d.get("href"):
+                      self.links.append(d["href"])
+
+          parser = Parser()
+          parser.feed(body)
+          print(f"V48_SCRIPT_TAGS={len(parser.scripts)}")
+          print(f"V48_FORM_COUNT={len(parser.forms)}")
+          for method, action in parser.forms[:30]:
+              u = urlsplit(urljoin(base, action))
+              print(f"V48_FORM method={method.upper()} host={u.hostname or '<none>'} path={u.path or '/'}")
+
+          allowed = []
+          for src in parser.scripts:
+              absolute = urljoin(base, src)
+              u = urlsplit(absolute)
+              host = (u.hostname or "").lower()
+              if host == "skyscanner.net" or host.endswith(".skyscanner.net"):
+                  clean = f"{u.scheme}://{u.netloc}{u.path}"
+                  if clean not in allowed:
+                      allowed.append(clean)
+          Path("/tmp/v48.allowed").write_text("\n".join(allowed[:8]))
+          print(f"V48_ALLOWED_SCRIPT_COUNT={len(allowed)}")
+          print(f"V48_SELECTED_SCRIPT_COUNT={min(8, len(allowed))}")
+
+          terms = [
+              "savvy", "ai search", "explore-ai", "prompt", "recommendation",
+              "destination", "openai", "graphql", "operationName"
+          ]
+          lower = body.lower()
+          print("V48_HTML_TERMS=" + repr([t for t in terms if t.lower() in lower]))
+          print("V48_CONTRACT_PREP_DONE=1")
+          PY
+
+          n=0
+          while IFS= read -r asset; do
+            test -n "$asset" || continue
+            n=$((n+1))
+            curl -fsS --max-time 30 \
+              -H "$HDR" -H "User-Agent: $UA" \
+              -H 'Accept: application/javascript,*/*;q=0.8' \
+              -o "/tmp/v48-assets/$n.js" "$asset" || true
+            echo "V48_ASSET_$n bytes=$(wc -c <"/tmp/v48-assets/$n.js") sha256=$(sha256sum "/tmp/v48-assets/$n.js" | cut -d' ' -f1)"
+            sleep 1
+          done < /tmp/v48.allowed
+          echo "V48_TARGET_REQUEST_COUNT=$((1+n))"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          from urllib.parse import urlsplit
+          import re
+
+          files = [Path("/tmp/v48.html")] + sorted(Path("/tmp/v48-assets").glob("*.js"))
+          term_rx = re.compile(
+              r"savvy|ai[_ /-]?search|explore-ai|openai|prompt|recommend(?:ation|ations)?|destination",
+              re.I
+          )
+          url_rx = re.compile(r"https?://[^\s\"'<>\\]+")
+          route_rx = re.compile(
+              r"[\"']((?:/|https?://)[A-Za-z0-9_./?=&%:-]{3,260})[\"']"
+          )
+          long_lit = re.compile(r"[A-Za-z0-9_+/=.-]{60,}")
+
+          def clean_url(value):
+              try:
+                  u = urlsplit(value.rstrip(").,;"))
+                  return f"{u.scheme}://{u.netloc}{u.path[:240]}"
+              except Exception:
+                  return "<url-redacted>"
+
+          matches, routes = [], set()
+          for path in files:
+              text = path.read_text(errors="replace")
+              for m in term_rx.finditer(text):
+                  snippet = text[max(0, m.start()-180):m.end()+320]
+                  snippet = long_lit.sub("<long-literal-redacted>", snippet)
+                  snippet = url_rx.sub(lambda x: clean_url(x.group(0)), snippet)
+                  snippet = " ".join(snippet.split())
+                  matches.append((path.name, m.group(0), snippet[:650]))
+                  if len(matches) >= 160:
+                      break
+              for m in route_rx.finditer(text):
+                  value = m.group(1)
+                  if term_rx.search(value) or any(k in value.lower() for k in ("graphql", "/api/", "query", "search")):
+                      if value.startswith("http"):
+                          value = clean_url(value)
+                      else:
+                          value = value.split("?")[0]
+                      routes.add((path.name, value[:260]))
+              if len(matches) >= 160:
+                  break
+
+          print(f"V48_MATCH_COUNT={len(matches)}")
+          for name, term, snippet in matches:
+              print(f"MATCH file={name} term={term} snippet={snippet}")
+          print(f"V48_ROUTE_COUNT={len(routes)}")
+          for name, route in sorted(routes)[:180]:
+              print(f"ROUTE file={name} value={route}")
+          print("V48_EXPLORE_AI_PASSIVE_DONE=1")
+          PY
