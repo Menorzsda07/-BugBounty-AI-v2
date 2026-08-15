@@ -1,0 +1,58 @@
+name: Bugcrowd YNAB DOM context trace
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-ynab-dom-context.yml'
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Extract suspicious source/sink neighborhoods from current same-host bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess,re,json,os
+          base='https://staging-app.bany.dev'
+          paths=[
+          '/assets/packs/js/418-6d029bc76026b00b6703.js',
+          '/assets/packs/js/504-2ff8a3de1ba006ca876a.js',
+          '/assets/packs/js/519-bede6b13438d1b131f28.js',
+          '/assets/packs/js/692-9c1dfda28a67a79373df.js',
+          '/assets/packs/js/831-77e04493434326eef099.js',
+          '/assets/packs/js/956-58d5003c1127c1a73975.js',
+          '/assets/packs/js/960-b2c1100206f0e2e0044a.js',
+          '/assets/packs/js/application-d19d79fbeb936b83dc8a.js']
+          pats=['location.search','location.hash','URLSearchParams','postMessage','addEventListener("message"','addEventListener(\'message\'','innerHTML','outerHTML','insertAdjacentHTML','srcdoc','.html(','document.referrer','window.name']
+          out=[]
+          for path in paths:
+            u=base+path
+            p=subprocess.run(['curl','-ksS','--max-time','15','--max-redirs','0','-A','BugBounty-AI scoped-security-research',u],text=True,capture_output=True)
+            t=p.stdout
+            hits=[]
+            for pat in pats:
+              start=0
+              while len(hits)<80:
+                i=t.find(pat,start)
+                if i<0: break
+                lo=max(0,i-700); hi=min(len(t),i+1200)
+                hits.append({'pattern':pat,'offset':i,'context':re.sub(r'\s+',' ',t[lo:hi])})
+                start=i+len(pat)
+            if hits: out.append({'url':u,'hits':hits})
+          os.makedirs('out',exist_ok=True)
+          json.dump(out,open('out/ynab-dom-context.json','w'),indent=2)
+          for item in out:
+            print('URL',item['url'])
+            for h in item['hits']:
+              if h['pattern'] in ('location.search','location.hash','URLSearchParams','postMessage','addEventListener("message"','addEventListener(\'message\'','srcdoc','innerHTML','insertAdjacentHTML'):
+                print(json.dumps(h)[:2600])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ynab-dom-context
+          path: out/ynab-dom-context.json
+          retention-days: 2
