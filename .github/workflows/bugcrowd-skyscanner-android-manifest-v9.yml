@@ -1,0 +1,93 @@
+name: Bugcrowd Skyscanner Android Manifest V9
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-android-manifest-v9.yml'
+  workflow_dispatch:
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Acquire verified Skyscanner 7.204 APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable \
+            -a net.skyscanner.android.main /output
+          unzip -q out/net.skyscanner.android.main.xapk -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n1)
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n1)
+          PKG=$("$AAPT" dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -n1)
+          VER=$("$AAPT" dump badging "$APK" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -n1)
+          CERT=$("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/^V3.0 Signer: certificate SHA-256 digest: //p' | head -n1)
+          test "$PKG" = 'net.skyscanner.android.main'
+          test "$VER" = '7.204'
+          test "$CERT" = 'd7940f8fc2a01fd9ae585538c293fe45eb0fe1ac538605788fe4f68ea580337a'
+          echo "APK_VERIFIED package=$PKG version=$VER cert=$CERT"
+
+      - name: Decode resources with verified Apktool 3.0.3
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sS -L --max-time 60 \
+            -o /tmp/apktool.jar \
+            'https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar'
+          echo 'dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423  /tmp/apktool.jar' | sha256sum -c -
+          java -jar /tmp/apktool.jar d -f -s \
+            -o decoded unpacked/net.skyscanner.android.main.apk >/tmp/apktool.log 2>&1
+          tail -n 20 /tmp/apktool.log
+
+      - name: Analyze manifest and security XML
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          A='{http://schemas.android.com/apk/res/android}'
+          root=ET.parse('decoded/AndroidManifest.xml').getroot()
+          app=root.find('application')
+          print('=== APPLICATION SECURITY FLAGS ===')
+          for k in ['debuggable','allowBackup','usesCleartextTraffic','networkSecurityConfig','testOnly']:
+              print(k, app.get(A+k))
+          print('\n=== EXPORTED COMPONENTS ===')
+          count=0
+          for tag in ['activity','activity-alias','service','receiver','provider']:
+              for e in app.findall(tag):
+                  name=e.get(A+'name')
+                  exp=e.get(A+'exported')
+                  filters=e.findall('intent-filter')
+                  # Pre-Android-12 default semantics: component with intent-filter exported by default.
+                  effective = exp == 'true' or (exp is None and bool(filters))
+                  if not effective:
+                      continue
+                  count+=1
+                  print(f'COMPONENT type={tag} name={name} exported={exp} permission={e.get(A+"permission")} authorities={e.get(A+"authorities")}')
+                  for f in filters:
+                      actions=[x.get(A+'name') for x in f.findall('action')]
+                      cats=[x.get(A+'name') for x in f.findall('category')]
+                      data=[]
+                      for d in f.findall('data'):
+                          data.append({k:d.get(A+k) for k in ['scheme','host','port','path','pathPrefix','pathPattern','pathAdvancedPattern','mimeType'] if d.get(A+k) is not None})
+                      print('  FILTER autoVerify=%s actions=%s categories=%s data=%s' % (f.get(A+'autoVerify'),actions,cats,data))
+          print('EXPORTED_COUNT',count)
+          PY
+
+          echo '=== NETWORK SECURITY CONFIG ==='
+          find decoded/res/xml -maxdepth 1 -type f -iname '*network*security*' -print -exec sed -n '1,260p' {} \; || true
+
+          echo '=== FILE PROVIDER PATHS ==='
+          grep -R -n -E '<(root-path|files-path|cache-path|external-path|external-files-path|external-cache-path|external-media-path)' decoded/res/xml 2>/dev/null | head -n 200 || true
+
+          echo '=== FILE PROVIDER XML CANDIDATES ==='
+          rg -n -i 'file.?provider|external-path|root-path|cache-path|files-path' decoded/res/xml decoded/AndroidManifest.xml 2>/dev/null | head -n 300 || true
+
+          echo '=== DEEP LINK / OAUTH MANIFEST EXACT ==='
+          rg -n -B4 -A45 'OAuthRedirectRouterActivity|SplashActivity|oauth/redirect|PartnerWebView|WebArticleActivity|LinkShareBroadcastReceiver' decoded/AndroidManifest.xml | head -n 900 || true
+
+          echo 'V9_MANIFEST_DONE=1'
