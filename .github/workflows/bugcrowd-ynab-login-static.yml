@@ -1,0 +1,53 @@
+name: Bugcrowd YNAB login static analysis
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-ynab-login-static.yml'
+permissions:
+  contents: read
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Fetch login and same-host JS only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess,re,urllib.parse,json,os
+          base='https://staging-app.bany.dev'
+          pages=['/users/sign_in','/oauth/authorize?client_id=invalid-bbai&redirect_uri=https%3A%2F%2Fexample.invalid%2Fcb&response_type=code','/oauth/authorize?client_id=invalid-bbai&redirect_uri=https%3A%2F%2Fexample.invalid%2Fcb&response_type=token']
+          def get(url):
+            p=subprocess.run(['curl','-ksS','--max-time','15','--max-redirs','0','-A','BugBounty-AI scoped-security-research','-D','/tmp/h','-o','/tmp/b','-w','%{http_code} %{size_download} %{content_type}',url],text=True,capture_output=True)
+            h=open('/tmp/h',errors='replace').read(); b=open('/tmp/b','rb').read(); return p.stdout.strip(),h,b
+          out=[]; scripts=[]
+          for path in pages:
+            u=base+path
+            meta,h,b=get(u); text=b.decode('utf-8','replace')
+            row={'url':u,'meta':meta,'location':next((x.split(':',1)[1].strip() for x in h.splitlines() if x.lower().startswith('location:')),''),'set_cookie_names':re.findall(r'(?im)^set-cookie:\s*([^=;]+)=',h),'forms':re.findall(r'(?is)<form\b[^>]*?(?:action=["\']([^"\']*)["\'])?[^>]*>',text)[:20],'hidden_names':re.findall(r'(?is)<input[^>]+type=["\']hidden["\'][^>]+name=["\']([^"\']+)',text)[:50],'script_srcs':re.findall(r'(?is)<script[^>]+src=["\']([^"\']+)',text)[:50],'body_marker':'example.invalid' in text}
+            out.append(row)
+            if path=='/users/sign_in':
+              for ref in row['script_srcs']:
+                su=urllib.parse.urljoin(base+'/',ref)
+                if urllib.parse.urlsplit(su).hostname=='staging-app.bany.dev': scripts.append(su)
+          sink_patterns={'innerHTML':r'innerHTML','outerHTML':r'outerHTML','insertAdjacentHTML':r'insertAdjacentHTML','document_write':r'document\.write','eval':r'\beval\s*\(','new_Function':r'new\s+Function\s*\(','location_search':r'location\.search','location_hash':r'location\.hash','URLSearchParams':r'URLSearchParams','postMessage':r'postMessage','message_listener':r'addEventListener\s*\(\s*["\']message','srcdoc':r'srcdoc','jquery_html':r'\.html\s*\('}
+          for su in sorted(set(scripts))[:40]:
+            meta,h,b=get(su); t=b.decode('utf-8','replace')
+            hits={k:len(re.findall(v,t,re.I)) for k,v in sink_patterns.items()}
+            hits={k:v for k,v in hits.items() if v}
+            maps=re.findall(r'(?i)sourceMappingURL\s*=\s*([^\s*]+)',t[-150000:])[:10]
+            interesting=sorted(set(re.findall(r'["\'](/[^"\']{2,180})["\']',t[:2000000])))
+            interesting=[x for x in interesting if any(k in x.lower() for k in ['oauth','auth','sign_in','redirect','return','callback','token','api'])][:100]
+            if hits or maps or interesting:
+              out.append({'url':su,'meta':meta,'sinks':hits,'maps':maps,'routes':interesting})
+          os.makedirs('out',exist_ok=True)
+          json.dump(out,open('out/ynab-login-static.json','w'),indent=2)
+          for r in out: print(json.dumps(r)[:3000])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ynab-login-static
+          path: out/ynab-login-static.json
+          retention-days: 2
