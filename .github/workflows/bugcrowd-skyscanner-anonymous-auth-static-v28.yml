@@ -1,0 +1,39 @@
+name: Bugcrowd Skyscanner Anonymous Auth Static V28
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-anonymous-auth-static-v28.yml'
+  workflow_dispatch:
+
+jobs:
+  anonymous-auth-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Trace anonymous auth token client in official APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/apkraw"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          unzip -q "$APK" -d apkraw
+
+          echo '=== ANONYMOUS AUTH RELATED DEX STRINGS ==='
+          for f in apkraw/classes*.dex; do strings -n 4 "$f"; done \
+            | grep -Ei '(anonymous-auth-service|anonymous.?auth|AnonymousAuth|/token|device.?id|client.?id|grant.?type|Bearer|authorization)' \
+            | sort -u | head -n 1600 || true
+
+          echo '=== LIKELY CLASS DESCRIPTORS ==='
+          for f in apkraw/classes*.dex; do strings -n 8 "$f"; done \
+            | grep -E 'L(net/skyscanner|com/skyscanner)/[^;]*(Anonymous|anonymous|Auth|auth)[^;]*;' \
+            | sort -u | head -n 700 || true
+
+          echo '=== URL CONTEXT ==='
+          for f in apkraw/classes*.dex; do strings -n 5 "$f"; done \
+            | grep -Ei '.{0,80}www\.skyscanner\.net/g/anonymous-auth-service/token.{0,140}' \
+            | head -n 100 || true
+          echo 'V28_ANON_AUTH_STATIC_DONE=1'
