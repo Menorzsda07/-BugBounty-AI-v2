@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "last_consolidated": "2026-08-15T17:08:00-03:00",
+  "canonical_repository": "Menorzsda07/-BugBounty-AI-v2",
+  "entrypoints": {
+    "agent_instructions": "AGENTS.md",
+    "human_index": "CHATGPT_BUG_BOUNTY_CONTINUITY.md",
+    "hackerone": "docs/continuity/HACKERONE.md",
+    "bugcrowd": "docs/continuity/BUGCROWD.md"
+  },
+  "rules": {
+    "keep_platforms_separate": true,
+    "keep_programs_separate": true,
+    "recheck_live_scope_before_requests": true,
+    "inspect_latest_actions_before_repeating_tests": true,
+    "researcher_owned_or_provided_accounts_only": true,
+    "no_secrets_in_continuity_docs": true,
+    "do_not_promote_candidates_without_evidence": true,
+    "stop_on_real_third_party_data": true
+  },
+  "status_vocabulary": [
+    "CONFIRMED_REPORT_READY",
+    "CONFIRMED_SUBMITTED",
+    "ACCEPTED",
+    "CANDIDATE",
+    "NEGATIVE",
+    "PLANNED",
+    "UNKNOWN_REVIEW_REQUIRED"
+  ],
+  "platforms": {
+    "HackerOne": {
+      "programs": {
+        "GitLab": {
+          "status": "CONFIRMED_REPORT_READY",
+          "confirmed_findings": 1,
+          "finding": {
+            "title": "GitLab MCP add_branch ignores the supplied URL origin and mutates a same-path local project",
+            "weakness": "CWE-346",
+            "suggested_severity": "Low",
+            "impact": "Cross-instance/origin confusion causes an external absolute URL path to be resolved against the connected GitLab instance and can produce a local write under the connected user's existing permissions.",
+            "limitations": [
+              "No authentication bypass",
+              "No authorization bypass",
+              "Existing permissions required",
+              "Same-path local resource required",
+              "User or agent interaction required"
+            ],
+            "tested_source_commit": "fc46f5b29edba351570261de5a3af45a66d3606a",
+            "evidence_repository": "Menorzsda07/Bugbounty-titan-",
+            "evidence_branch": "titan/gitlab-mcp-url-origin-validation",
+            "evidence_commit": "c2d11ce5112f70dd43fd12a06d0526b50b81bad0",
+            "workflow_run": 31758045268,
+            "workflow_job": 94638086675,
+            "artifact_id": 9204103684,
+            "artifact_sha256": "c5fa9e6fe44efd7b73c38a1328df41ec66f701d0927b25acac4d06f0868818e1",
+            "supporting_executor_run": 31751151389,
+            "supporting_executor_commit": "193a06d221d7c01281735af4e75f62a95453e904",
+            "bounty_snapshot_usd": {
+              "min": 100,
+              "max": 750,
+              "basis": "Historical Low range recorded at report preparation; final amount is program-controlled"
+            }
+          },
+          "resume": "Check whether the prepared HackerOne report has already been submitted or received triage before doing additional technical testing."
+        },
+        "Coinbase_cb_mpc": {
+          "status": "CONFIRMED_REPORT_READY",
+          "confirmed_findings": 1,
+          "finding": {
+            "title": "cb-mpc EdDSA-MP 2-of-3 message/output aliasing lets a malicious signer obtain an unauthorized Ed25519 signature",
+            "suggested_severity": "High",
+            "preferred_weakness": "CWE-826",
+            "fallback_weakness": "CWE-416",
+            "tested_source_commit": "fdbb60346757271d5e0241f417e55dc8f289573c",
+            "poc_commit": "4cbccf4c4eeeb842491e2fe3b6f1b5b522f9f7db",
+            "workflow_run": 31840342298,
+            "workflow_job": 94895628825,
+            "proof_markers": [
+              "PUBLIC_ONLY_EDDSA_2OF3_UNAUTHORIZED_SIGNATURE_CONFIRMED=1",
+              "V42_PUBLIC_ONLY_STANDALONE_CONFIRMED=1"
+            ],
+            "impact": "In a 2-of-3 public API signing flow, short-buffer msg/sig aliasing can zeroize the honest signer's approved message before consumption, allowing the malicious online signer/receiver to obtain a valid signature for the zero message while the honest approved non-zero message does not verify.",
+            "limitations": [
+              "Demonstrated substitution is all-zero bytes of the same length",
+              "No arbitrary attacker-selected message substitution demonstrated",
+              "No private-key extraction demonstrated",
+              "No RCE demonstrated"
+            ],
+            "bounty_snapshot_usd": null
+          },
+          "resume": "Check submission/triage state first. Later cb-mpc workflows are research history, not automatically additional confirmed findings."
+        },
+        "Syfe": {
+          "status": "NEGATIVE",
+          "confirmed_findings": 0,
+          "targets_recovered": [
+            "https://uat-bugbounty.nonprod.syfe.com",
+            "https://api-uat-bugbounty.nonprod.syfe.com",
+            "https://alfred-uat-31.nonprod.syfe.com"
+          ],
+          "config": "bugbounty_runner/config.titan-syfe-uat.json",
+          "recovered_request_count": 93,
+          "constraints": [
+            "Automated work restricted to UAT in recovered config",
+            "Production automation prohibited",
+            "UAT findings require production reproduction for bounty eligibility",
+            "Only researcher-owned accounts",
+            "No destructive/privacy/DoS/social-engineering/bruteforce/spam/degradation testing"
+          ],
+          "resume": "Inspect latest Syfe Actions and current live HackerOne rules before any production validation."
+        },
+        "Wolt": {
+          "status": "UNKNOWN_REVIEW_REQUIRED",
+          "confirmed_findings": 0,
+          "recovered_request_count": 297,
+          "scopeguard_blocks": 34,
+          "runner_errors": 0,
+          "workflows": [
+            ".github/workflows/titan-wolt-phase1.yml",
+            ".github/workflows/titan-wolt-phase2.yml",
+            ".github/workflows/titan-wolt-path-validation.yml",
+            ".github/workflows/titan-wolt-reflection-validation.yml"
+          ],
+          "resume": "Inspect final path/reflection workflow logs before running new requests; do not repeat full Phase 1/2 automatically."
+        }
+      }
+    },
+    "Bugcrowd": {
+      "programs": {
+        "Skyscanner": {
+          "status": "NEGATIVE",
+          "latest_completed_version": 36,
+          "confirmed_findings": 0,
+          "confirmed_bounty_usd": 0,
+          "required_header": "Skyscanner-Security: Bugcrowd",
+          "reward_snapshot_2026_08_15": {
+            "P1": "USD 3000-8000",
+            "P2": "USD 900-3000",
+            "P3": "USD 300-500",
+            "P4": "USD 100-150"
+          },
+          "latest_commit": "e38163b13751e40b3a1969f98f82da48a68b884f",
+          "closed_tests": [
+            {
+              "version": 35,
+              "name": "two controlled anonymous identities",
+              "status": "NEGATIVE",
+              "commit": "d365a8aa6503ef222ca2624deb0dee28684e67e7",
+              "workflow_run": 31903201446,
+              "workflow_job": 95057010225,
+              "result": "A and B received distinct anonymous identities; protected Saved, Price Alerts and current-identity requests returned 401 for both."
+            },
+            {
+              "version": 36,
+              "name": "previous_utid controlled reclaim attempt",
+              "status": "NEGATIVE",
+              "commit": "e38163b13751e40b3a1969f98f82da48a68b884f",
+              "workflow_run": 31903244954,
+              "result": "Supplying a previous controlled UTID did not restore that identity; new UTIDs/identities were issued."
+            }
+          ],
+          "next_test": {
+            "version": 37,
+            "status": "PLANNED",
+            "name": "anonymous refresh-token identity binding",
+            "safety": "Use only two researcher-controlled identities, no token guessing/bruteforce, no third-party data, low request volume, mandatory Bugcrowd header."
+          },
+          "resume": "Read BUGCROWD.md and latest v36 log. Derive the exact refresh contract from the official client before any v37 request."
+        }
+      }
+    }
+  },
+  "unclassified_or_requires_review": {
+    "public_repository_workstreams": [
+      "Klarna",
+      "WisdomTree",
+      "Polygon"
+    ],
+    "private_repository": "Menorzsda07/Bugbounty-titan-",
+    "private_workstreams": [
+      "Deribit",
+      "Dynatrace",
+      "Home Bargains"
+    ],
+    "rule": "Do not infer platform, scope, final finding status or bounty merely from workflow names. Re-read program source and Actions evidence."
+  }
+}
