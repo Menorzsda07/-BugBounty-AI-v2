@@ -1,0 +1,67 @@
+name: Bugcrowd Skyscanner Android Exported Audit V19
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-android-exported-audit-v19.yml'
+  workflow_dispatch:
+
+jobs:
+  exported-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Enumerate exported Android components and protections
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable \
+            -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          test -f "$APK"
+
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n1)
+          "$APKSIGNER" verify --print-certs "$APK" | sed -n '1,12p'
+
+          ANALYZER=$(find "$ANDROID_HOME" -type f -name apkanalyzer 2>/dev/null | head -n1 || true)
+          if [ -n "$ANALYZER" ]; then
+            "$ANALYZER" manifest print "$APK" > /tmp/manifest.xml
+            echo '=== EXPORTED TRUE COMPONENT BLOCKS ==='
+            python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          ns='{http://schemas.android.com/apk/res/android}'
+          root=ET.parse('/tmp/manifest.xml').getroot()
+          app=root.find('application')
+          for tag in ('activity','activity-alias','service','receiver','provider'):
+              for e in app.findall(tag):
+                  exported=e.get(ns+'exported')
+                  # Android semantics: intent-filter may imply exported on older manifests; target is modern, still print explicit and filters.
+                  filters=e.findall('intent-filter')
+                  if exported == 'true':
+                      print(f'COMPONENT tag={tag} name={e.get(ns+"name")} exported={exported} permission={e.get(ns+"permission")} authorities={e.get(ns+"authorities")}')
+                      for f in filters:
+                          actions=[x.get(ns+'name') for x in f.findall('action')]
+                          cats=[x.get(ns+'name') for x in f.findall('category')]
+                          datas=[]
+                          for d in f.findall('data'):
+                              datas.append({k.split('}')[-1]:v for k,v in d.attrib.items()})
+                          print('  FILTER actions=',actions,'categories=',cats,'data=',datas)
+          PY
+            echo '=== ALL COMPONENTS WITH CUSTOM PERMISSIONS ==='
+            python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          ns='{http://schemas.android.com/apk/res/android}'
+          root=ET.parse('/tmp/manifest.xml').getroot(); app=root.find('application')
+          for tag in ('activity','activity-alias','service','receiver','provider'):
+              for e in app.findall(tag):
+                  p=e.get(ns+'permission')
+                  if p:
+                      print(tag, e.get(ns+'name'), 'exported=',e.get(ns+'exported'),'permission=',p)
+          PY
+          else
+            echo 'apkanalyzer unavailable'
+          fi
+          echo 'V19_EXPORTED_AUDIT_DONE=1'
