@@ -1,0 +1,38 @@
+name: Bugcrowd Skyscanner Partner Portal ReturnUrl V14
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-partnerportal-returnurl-v14.yml'
+  workflow_dispatch:
+
+jobs:
+  returnurl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Targeted returnUrl validation checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-ReturnUrl/1.0'
+
+          req() {
+            name="$1"; url="$2"
+            echo "=== $name ==="
+            curl -sS --max-time 20 -H "$HDR" -H "User-Agent: $UA" \
+              -D "/tmp/$name.h" -o "/tmp/$name.b" "$url" || true
+            grep -Ei '^(HTTP/|location:|set-cookie:|access-control|x-service|x-gateway|content-type:)' "/tmp/$name.h" | head -n 40 || true
+            echo "BODY_BYTES=$(wc -c < /tmp/$name.b 2>/dev/null || echo 0)"
+            head -c 1500 "/tmp/$name.b" 2>/dev/null || true
+            echo
+          }
+
+          BASE='https://partnerportal.skyscanner.net/authenticate/login?returnUrl='
+          req local "${BASE}%2F"
+          req absolute_external "${BASE}https%3A%2F%2Fexample.com%2Fbugcrowd"
+          req scheme_relative "${BASE}%2F%2Fexample.com%2Fbugcrowd"
+          req encoded_scheme_relative "${BASE}%252F%252Fexample.com%252Fbugcrowd"
+          req backslash_external "${BASE}%5C%5Cexample.com%5Cbugcrowd"
+          echo 'V14_RETURNURL_DONE=1'
