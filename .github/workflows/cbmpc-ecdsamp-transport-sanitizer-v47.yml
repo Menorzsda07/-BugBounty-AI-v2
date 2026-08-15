@@ -30,6 +30,7 @@ jobs:
           mkdir -p cb-mpc/poc-v47
           cp audit/pocs/cbmpc_ecdsamp_transport_mutation_v47.cpp cb-mpc/poc-v47/
           cp audit/pocs/cbmpc_ecdsamp_transport_mutation_v47_CMakeLists.txt cb-mpc/poc-v47/CMakeLists.txt
+          sed -i 's/int max_sends=std::min(ctl.sends,8);/int max_sends=ctl.sends;/' cb-mpc/poc-v47/cbmpc_ecdsamp_transport_mutation_v47.cpp
           if grep -q 'include-internal\|cbmpc/internal' cb-mpc/poc-v47/cbmpc_ecdsamp_transport_mutation_v47.cpp; then
             echo 'V47_PUBLIC_ONLY_SOURCE_CHECK=0'; exit 1
           fi
