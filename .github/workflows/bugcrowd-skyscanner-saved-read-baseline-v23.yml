@@ -1,0 +1,61 @@
+name: Bugcrowd Skyscanner Saved Read Baseline V23
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-saved-read-baseline-v23.yml'
+  workflow_dispatch:
+
+jobs:
+  saved-read-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Compare exact Saved read endpoints across two fresh anonymous sessions
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-Saved-Baseline/1.0'
+          BASE='https://mobile.ds.skyscanner.net/g/saved-experience-api/'
+
+          req() {
+            session="$1"; name="$2"; url="$3"
+            jar="/tmp/${session}.jar"
+            echo "=== $session :: $name ==="
+            curl -sS --max-time 20 -c "$jar" -b "$jar" \
+              -H "$HDR" -H "User-Agent: $UA" -H 'Accept: application/json' \
+              -D "/tmp/${session}_${name}.h" -o "/tmp/${session}_${name}.b" "$url" || true
+            grep -Ei '^(HTTP/|content-type:|www-authenticate:|set-cookie:|x-service|x-gateway)' "/tmp/${session}_${name}.h" | head -n 40 || true
+            echo "BODY_SHA256=$(sha256sum /tmp/${session}_${name}.b 2>/dev/null | cut -d' ' -f1)"
+            echo "BODY_BYTES=$(wc -c < /tmp/${session}_${name}.b 2>/dev/null || echo 0)"
+            python3 - "/tmp/${session}_${name}.b" <<'PY'
+          import sys,json,os
+          p=sys.argv[1]
+          raw=open(p,'rb').read(16000) if os.path.exists(p) else b''
+          try:
+              x=json.loads(raw)
+              def sh(v,d=0):
+                  if d>4:return '<depth>'
+                  if isinstance(v,dict):return {k:sh(z,d+1) for k,z in list(v.items())[:35]}
+                  if isinstance(v,list):return {'_list_count':len(v),'sample':sh(v[0],d+1) if v else None}
+                  if isinstance(v,str):return v[:140]
+                  return v
+              print(json.dumps(sh(x),indent=2)[:10000])
+          except Exception: print(raw.decode('utf-8','replace')[:2500])
+          PY
+          }
+
+          for s in A B; do
+            req "$s" features "${BASE}v2/available-save-features"
+            req "$s" list_v2 "${BASE}v2/items/list?market=US&locale=en-US&currency_code=USD&use_v2_cards=true"
+            req "$s" matching_flight "${BASE}v2/items/matching?type=FLIGHT_ITINERARY"
+            req "$s" list_v3 "${BASE}v3alpha/items/list?market=US&locale=en-US&currency_code=USD"
+          done
+
+          echo '=== COOKIE JAR IDENTIFIERS REDACTED / STRUCTURE ONLY ==='
+          for s in A B; do
+            echo "SESSION=$s"
+            awk 'BEGIN{FS="\t"} !/^#/ && NF>=7 {print $1,$6,"<redacted>"}' "/tmp/${s}.jar" || true
+          done
+          echo 'V23_SAVED_READ_BASELINE_DONE=1'
