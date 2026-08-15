@@ -1,0 +1,64 @@
+{
+  "titan_profile": "V PRO 1.0 Bugcrowd iRobot reviewed-scope",
+  "template_only": false,
+  "programs": [
+    {
+      "name": "bugcrowd-irobot",
+      "targets": [
+        "https://www.irobot.com/",
+        "https://aspen-ecommerce-prod.iot.irobotapi.com/dev/v1/ecommerce/entitlements/00000000-0000-0000-0000-000000000000",
+        "https://aspen-ecommerce-prod.iot.irobotapi.com/dev/v1/ecommerce/robots/00000000-0000-0000-0000-000000000000/entitlements",
+        "https://aspen-ecommerce-prod.iot.irobotapi.com/dev/v1/ecommerce/users/00000000-0000-0000-0000-000000000000/entitlements",
+        "https://zuora-ecommerce-prod.iot.irobotapi.com/dev/v1/ecommerce/notifications/raas"
+      ],
+      "exclude_paths": [],
+      "excluded_hosts": [
+        "homesupport.irobot.com",
+        "about.irobot.com",
+        "global.irobot.com",
+        "hosted-pages.id.me"
+      ],
+      "notes": "Subset made only from targets explicitly listed in the current public Bugcrowd-derived scope snapshot. UUID zero values are researcher-controlled invalid placeholders; never substitute identifiers belonging to other users or robots without explicit authorization. Third-party hosts remain blocked."
+    }
+  ],
+  "max_requests_per_target_per_runner": 12,
+  "delay_ms": 1500,
+  "runner_count": 12,
+  "evidence_policy": {
+    "store_response_bodies": false,
+    "store_secret_values": false,
+    "store_auth_material": false,
+    "store_pii_values": false
+  },
+  "scope_policy": {
+    "discovered_urls_must_be_allowlisted": true,
+    "follow_redirects": false,
+    "third_party_fetches": false
+  },
+  "enabled_modules": [
+    "surface",
+    "headers",
+    "well_known",
+    "cookie_security",
+    "js_routes",
+    "api_hints",
+    "sourcemaps",
+    "auth_boundary",
+    "method_diff",
+    "cors",
+    "cache",
+    "openapi_graphql",
+    "dns_http_inventory",
+    "fingerprints",
+    "status_anomaly",
+    "content_type_diff",
+    "path_normalization_diff",
+    "encoding_diff",
+    "header_behavior_diff",
+    "method_consistency",
+    "response_shape_diff",
+    "cache_variance"
+  ],
+  "aggressive_modules": [],
+  "notes": "Initial iRobot pass stays non-destructive until full engagement-rule text is available. Authorization tests use only controlled/fake identifiers; no access to third-party records, no brute force, no DoS, no transactional side effects."
+}
