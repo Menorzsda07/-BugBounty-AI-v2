@@ -1,0 +1,49 @@
+name: Bugcrowd Skyscanner Auth API CORS V25
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-auth-api-cors-v25.yml'
+  workflow_dispatch:
+
+jobs:
+  cors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Test arbitrary-origin CORS on protected read endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-CORS/1.0'
+          ORIGIN='https://example.com'
+
+          check() {
+            name="$1"; url="$2"; method="$3"
+            echo "=== $name :: $method ==="
+            if [ "$method" = OPTIONS ]; then
+              curl -sS --max-time 20 -X OPTIONS \
+                -H "$HDR" -H "User-Agent: $UA" -H "Origin: $ORIGIN" \
+                -H 'Access-Control-Request-Method: GET' \
+                -H 'Access-Control-Request-Headers: authorization,content-type' \
+                -D "/tmp/$name.$method.h" -o "/tmp/$name.$method.b" "$url" || true
+            else
+              curl -sS --max-time 20 \
+                -H "$HDR" -H "User-Agent: $UA" -H "Origin: $ORIGIN" -H 'Accept: application/json' \
+                -D "/tmp/$name.$method.h" -o "/tmp/$name.$method.b" "$url" || true
+            fi
+            grep -Ei '^(HTTP/|access-control-|vary:|www-authenticate:|content-type:|x-service|x-gateway)' "/tmp/$name.$method.h" | head -n 80 || true
+            echo "BODY_BYTES=$(wc -c < /tmp/$name.$method.b 2>/dev/null || echo 0)"
+          }
+
+          check saved_list 'https://mobile.ds.skyscanner.net/g/saved-experience-api/v2/items/list?market=US&locale=en-US&currency_code=USD&use_v2_cards=true' OPTIONS
+          check saved_list 'https://mobile.ds.skyscanner.net/g/saved-experience-api/v2/items/list?market=US&locale=en-US&currency_code=USD&use_v2_cards=true' GET
+          check price_alerts 'https://mobile.ds.skyscanner.net/g/price-alerts/v1/alerts' OPTIONS
+          check price_alerts 'https://mobile.ds.skyscanner.net/g/price-alerts/v1/alerts' GET
+          check identity_current 'https://mobile.ds.skyscanner.net/g/identity/users/v1/authenticated' OPTIONS
+          check identity_current 'https://mobile.ds.skyscanner.net/g/identity/users/v1/authenticated' GET
+          check traveller_users 'https://mobile.ds.skyscanner.net/g/traveller-auth-service/users' OPTIONS
+          check traveller_users 'https://mobile.ds.skyscanner.net/g/traveller-auth-service/users' GET
+
+          echo 'V25_CORS_DONE=1'
