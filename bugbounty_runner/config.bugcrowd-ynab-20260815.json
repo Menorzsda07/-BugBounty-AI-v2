@@ -1,0 +1,62 @@
+{
+  "titan_profile": "V PRO 1.0 Bugcrowd YNAB safe-pass",
+  "template_only": false,
+  "programs": [
+    {
+      "name": "bugcrowd-ynab",
+      "targets": [
+        "https://staging-app.bany.dev/",
+        "https://staging-api.bany.dev/",
+        "https://www.ynab.com/"
+      ],
+      "exclude_paths": [],
+      "excluded_hosts": [
+        "app.ynab.com",
+        "support.ynab.com",
+        "develop-app.ynab.com",
+        "learn.ynab.com"
+      ],
+      "notes": "Bugcrowd YNAB safe first pass. Exact captured in-scope hosts only; no discovered host is promoted into scope. Keep third-party and explicitly OOS YNAB properties blocked."
+    }
+  ],
+  "max_requests_per_target_per_runner": 12,
+  "delay_ms": 1500,
+  "runner_count": 12,
+  "evidence_policy": {
+    "store_response_bodies": false,
+    "store_secret_values": false,
+    "store_auth_material": false,
+    "store_pii_values": false
+  },
+  "scope_policy": {
+    "discovered_urls_must_be_allowlisted": true,
+    "follow_redirects": false,
+    "third_party_fetches": false
+  },
+  "enabled_modules": [
+    "surface",
+    "headers",
+    "well_known",
+    "cookie_security",
+    "js_routes",
+    "api_hints",
+    "sourcemaps",
+    "auth_boundary",
+    "method_diff",
+    "cors",
+    "cache",
+    "openapi_graphql",
+    "dns_http_inventory",
+    "fingerprints",
+    "status_anomaly",
+    "content_type_diff",
+    "path_normalization_diff",
+    "encoding_diff",
+    "header_behavior_diff",
+    "method_consistency",
+    "response_shape_diff",
+    "cache_variance"
+  ],
+  "aggressive_modules": [],
+  "notes": "Initial low-impact Bugcrowd YNAB scan. No SQLi mutation, XSS payloading, sensitive-file probing, malformed-input error probes, or open-redirect payloading in this pass."
+}
