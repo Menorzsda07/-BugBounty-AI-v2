@@ -1,0 +1,91 @@
+name: Bugcrowd Skyscanner API Contracts V12
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-api-contracts-v12.yml'
+  workflow_dispatch:
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Acquire and verify Skyscanner 7.204
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/jadx_out"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable -a net.skyscanner.android.main /output
+          unzip -q out/net.skyscanner.android.main.xapk -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n1)
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n1)
+          PKG=$("$AAPT" dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -n1)
+          VER=$("$AAPT" dump badging "$APK" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -n1)
+          CERT=$("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/^V3.0 Signer: certificate SHA-256 digest: //p' | head -n1)
+          echo "PACKAGE=$PKG VERSION=$VER CERT=$CERT"
+          test "$PKG" = 'net.skyscanner.android.main'
+          test "$VER" = '7.204'
+          test "$CERT" = 'd7940f8fc2a01fd9ae585538c293fe45eb0fe1ac538605788fe4f68ea580337a'
+          curl -sS -L --max-time 60 -o /tmp/jadx.zip 'https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip'
+          echo '545ea2be9c242511bc145755cf4bda2485ade42966e096f8b4d3da2a230e8974  /tmp/jadx.zip' | sha256sum -c -
+          unzip -q /tmp/jadx.zip -d /tmp/jadx
+          /tmp/jadx/bin/jadx --show-bad-code --no-debug-info --threads-count 4 -d jadx_out "$APK" >/tmp/jadx.log 2>&1 || true
+          echo "DECOMPILED_JAVA=$(find jadx_out/sources -type f -name '*.java' | wc -l)"
+
+      - name: Extract exact API clients and object identifiers
+        shell: bash
+        run: |
+          set -euo pipefail
+          S=jadx_out/sources
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('jadx_out/sources')
+          terms=[
+            'g/apps-profile','g/traveller-auth-service','g/price-alerts','g/subscription-store',
+            'savedexperienceapi','save_to_list_legacy','SAVE_TO_LIST','TRIPS_ANONYMOUS_REOWN',
+            'trip_id','traveller_id','passenger_id','x-skyscanner-traveller-id','X-Skyscanner-Account-ID-Token',
+            '/profile/user/export','anonymous-auth-service/token'
+          ]
+          interesting=[]
+          for p in root.rglob('*.java'):
+            try: txt=p.read_text(errors='replace')
+            except Exception: continue
+            hits=[t for t in terms if t.lower() in txt.lower()]
+            if hits:
+              interesting.append((p,txt,hits))
+          print('MATCHING_FILES',len(interesting))
+          for p,txt,hits in interesting[:220]:
+            # Focus on network interfaces, repositories, endpoints, IDs, Retrofit annotations and request models.
+            lines=txt.splitlines()
+            idx=[]
+            for i,line in enumerate(lines):
+              if any(t.lower() in line.lower() for t in hits) or re.search(r'@(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|HTTP|Path|Query|Body|Header)\b',line):
+                idx.append(i)
+            if not idx: continue
+            print('\n### FILE',p,'HITS',','.join(hits))
+            emitted=set()
+            for i in idx[:80]:
+              a=max(0,i-8); b=min(len(lines),i+18)
+              key=(a,b)
+              if key in emitted: continue
+              emitted.add(key)
+              print(f'--- lines {a+1}-{b} ---')
+              print('\n'.join(lines[a:b]))
+          print('V12_MATCH_SCAN_DONE=1')
+          PY
+
+          echo '=== RETROFIT/KOTLIN HTTP ANNOTATION FILE INDEX ==='
+          grep -R -l -E '@(GET|POST|PUT|PATCH|DELETE|HTTP|Path|Query|Body|Header)\(' "$S/net/skyscanner" 2>/dev/null \
+            | grep -Ei 'saved|trip|profile|travell|passenger|identity|auth|subscription|alert' \
+            | head -n 300 || true
+
+          echo '=== EXACT SENSITIVE PATH CONTEXT ==='
+          grep -R -n -i -E -B5 -A18 \
+            'g/apps-profile|g/traveller-auth-service|g/price-alerts|g/subscription-store|profile/user/export|anonymous-auth-service/token|savedexperience|save_to_list|trip_id|traveller_id|passenger_id' \
+            "$S/net/skyscanner" "$S/defpackage" 2>/dev/null \
+            | head -n 2600 || true
+
+          echo 'V12_API_CONTRACTS_DONE=1'
