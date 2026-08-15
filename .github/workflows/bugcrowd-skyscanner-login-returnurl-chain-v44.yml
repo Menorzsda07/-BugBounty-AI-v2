@@ -1,0 +1,141 @@
+name: Bugcrowd Skyscanner Login ReturnUrl Chain V44
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-login-returnurl-chain-v44.yml'
+  workflow_dispatch:
+
+jobs:
+  login-returnurl-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Follow only same-origin returnUrl hops and stop before external identity providers
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-LoginReturnUrlChain/1.0'
+          START='https://www.skyscanner.net/account/login/?returnUrl=https%3A%2F%2Fexample.com%2Fbbv44marker'
+          MARKER='bbv44marker'
+          current="$START"
+          : > /tmp/v44.cookies
+          : > /tmp/v44.visited
+          echo 0 > /tmp/v44.direct
+          echo 0 > /tmp/v44.propagated
+          echo 0 > /tmp/v44.requests
+          echo 'V44_MAX_HOPS=4'
+
+          for step in 0 1 2 3; do
+            if grep -Fxq "$current" /tmp/v44.visited; then
+              echo "V44_STEP_${step}_LOOP_DETECTED=True"
+              break
+            fi
+            printf '%s\n' "$current" >> /tmp/v44.visited
+            count=$(cat /tmp/v44.requests)
+            echo $((count+1)) > /tmp/v44.requests
+
+            code=$(curl -sS --max-time 25 --max-redirs 0               -H "$HDR" -H "User-Agent: $UA"               -H 'Accept: text/html,application/xhtml+xml'               -c /tmp/v44.cookies -b /tmp/v44.cookies               -D "/tmp/v44.$step.h" -o "/tmp/v44.$step.b"               -w '%{http_code}' "$current" || true)
+            echo "V44_STEP_${step}_HTTP=$code"
+
+            action=$(python3 - "$step" "$current" "$MARKER" <<'PY'
+          import os, re, sys
+          from urllib.parse import parse_qs, unquote, urljoin, urlparse
+
+          step, current, marker = sys.argv[1:4]
+          headers = open(f"/tmp/v44.{step}.h", "r", errors="replace").read()
+          body = open(f"/tmp/v44.{step}.b", "rb").read(250000)
+          locations = re.findall(r"^location:\s*(.+?)\s*$", headers, re.I | re.M)
+          location = locations[-1] if locations else ""
+          parsed = urlparse(location)
+          host = (parsed.hostname or "").lower()
+          path = parsed.path or ""
+          query = parse_qs(parsed.query, keep_blank_values=True)
+          keys = sorted(query.keys())
+
+          def decode_many(value):
+              out = value
+              for _ in range(5):
+                  nxt = unquote(out)
+                  if nxt == out:
+                      break
+                  out = nxt
+              return out
+
+          decoded_location = decode_many(location)
+          direct_example = host == "example.com" or host.endswith(".example.com")
+          propagated = marker.lower() in decoded_location.lower() or "example.com" in decoded_location.lower()
+          return_values = [decode_many(v) for v in query.get("returnUrl", [])]
+          next_values = [decode_many(v) for v in query.get("next", [])]
+          return_external = any("example.com" in v.lower() for v in return_values)
+          next_external = any("example.com" in v.lower() for v in next_values)
+          body_reflected = marker.encode() in body.lower()
+
+          next_url = urljoin(current, location) if location else ""
+          next_host = (urlparse(next_url).hostname or "").lower()
+          same_target = next_host == "skyscanner.net" or next_host.endswith(".skyscanner.net")
+          next_is_example = next_host == "example.com" or next_host.endswith(".example.com")
+
+          print(f"V44_STEP_{step}_BODY_BYTES={len(body)}")
+          print(f"V44_STEP_{step}_HAS_LOCATION={bool(location)}")
+          print(f"V44_STEP_{step}_LOCATION_SCHEME={parsed.scheme or '<relative>'}")
+          print(f"V44_STEP_{step}_LOCATION_HOST={host or '<relative>'}")
+          print(f"V44_STEP_{step}_LOCATION_PATH={path[:220] or '<none>'}")
+          print(f"V44_STEP_{step}_QUERY_KEYS={keys}")
+          print(f"V44_STEP_{step}_DIRECT_EXAMPLE={direct_example}")
+          print(f"V44_STEP_{step}_MARKER_OR_EXAMPLE_PROPAGATED={propagated}")
+          print(f"V44_STEP_{step}_RETURNURL_EXTERNAL_VALUE={return_external}")
+          print(f"V44_STEP_{step}_NEXT_EXTERNAL_VALUE={next_external}")
+          print(f"V44_STEP_{step}_MARKER_REFLECTED_IN_BODY={body_reflected}")
+          print(f"V44_STEP_{step}_NEXT_HOST={next_host or '<none>'}")
+          print(f"V44_STEP_{step}_NEXT_IS_SKYSCANNER={same_target}")
+          print(f"V44_STEP_{step}_NEXT_IS_EXAMPLE={next_is_example}")
+
+          if direct_example or next_is_example:
+              open("/tmp/v44.direct", "w").write("1")
+              print("STOP_DIRECT_EXTERNAL")
+          elif propagated:
+              open("/tmp/v44.propagated", "w").write("1")
+              if same_target and next_url and next_url != current:
+                  open("/tmp/v44.next", "w").write(next_url)
+                  print("FOLLOW_SAME_TARGET")
+              elif next_url == current:
+                  print("STOP_LOOP")
+              else:
+                  print("STOP_BEFORE_NON_TARGET")
+          elif same_target and next_url and next_url != current:
+              open("/tmp/v44.next", "w").write(next_url)
+              print("FOLLOW_SAME_TARGET")
+          elif next_url == current:
+              print("STOP_LOOP")
+          else:
+              print("STOP_NO_SAFE_NEXT")
+          PY
+          )
+            printf '%s\n' "$action" | grep '^V44_' || true
+            decision=$(printf '%s\n' "$action" | tail -n 1)
+            if [ "$decision" = "FOLLOW_SAME_TARGET" ]; then
+              current=$(cat /tmp/v44.next)
+              sleep 1
+              continue
+            fi
+            echo "V44_STEP_${step}_DECISION=$decision"
+            break
+          done
+
+          direct=$(cat /tmp/v44.direct)
+          propagated=$(cat /tmp/v44.propagated)
+          requests=$(cat /tmp/v44.requests)
+          echo "V44_REQUEST_COUNT=$requests"
+          echo "V44_DIRECT_EXTERNAL_OBSERVED=$direct"
+          echo "V44_EXTERNAL_STATE_PROPAGATED=$propagated"
+          if [ "$direct" = "1" ]; then
+            verdict='CANDIDATE_DIRECT_OPEN_REDIRECT_REVIEW_REQUIRED'
+          elif [ "$propagated" = "1" ]; then
+            verdict='INCONCLUSIVE_POST_AUTH_STATE_REQUIRES_OWN_SESSION'
+          else
+            verdict='NEGATIVE_NO_EXTERNAL_REDIRECT_OR_STATE'
+          fi
+          echo "V44_VERDICT=$verdict"
+          echo 'V44_LOGIN_RETURNURL_CHAIN_DONE=1'
