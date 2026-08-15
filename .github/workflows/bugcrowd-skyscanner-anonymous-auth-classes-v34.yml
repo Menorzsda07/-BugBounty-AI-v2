@@ -1,0 +1,46 @@
+name: Bugcrowd Skyscanner Anonymous Auth Classes V34
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-anonymous-auth-classes-v34.yml'
+  workflow_dispatch:
+
+jobs:
+  anonymous-auth-classes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Locate anonymous identity classes using APK analyzer and DEX descriptors
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/apkraw"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          unzip -q "$APK" -d apkraw
+
+          ANALYZER=$(find "$ANDROID_HOME" -type f -name apkanalyzer 2>/dev/null | head -n1 || true)
+          echo "APK_ANALYZER=$ANALYZER"
+          if [ -n "$ANALYZER" ]; then
+            echo '=== APKANALYZER DEX PACKAGES/CLASSES MATCHING ANONYMOUS/IDENTITY ==='
+            "$ANALYZER" dex packages --defined-only "$APK" 2>/dev/null \
+              | grep -Ei '(anonymous|identityv2|identity/|authstate|travellerauth)' \
+              | head -n 1800 || true
+          fi
+
+          echo '=== RAW DEX CLASS DESCRIPTORS WITH ANONYMOUS/IDENTITY NAMES ==='
+          for f in apkraw/classes*.dex; do
+            strings -n 8 "$f" \
+              | grep -E '^L[^;]*(Anonymous|anonymous|IdentityV2|identityv2|AuthState|TravellerAuth)[^;]*;$' \
+              | sed 's#^L##; s#;$##; s#/#.#g'
+          done | sort -u | head -n 1800 || true
+
+          echo '=== SIMPLE CLASS-LIKE STRINGS ==='
+          for f in apkraw/classes*.dex; do strings -n 8 "$f"; done \
+            | grep -Ei '^(Anonymous[A-Za-z0-9_$]+|[A-Za-z0-9_$]*AnonymousIdentity[A-Za-z0-9_$]*|[A-Za-z0-9_$]*AnonymousAuth[A-Za-z0-9_$]*)$' \
+            | sort -u | head -n 600 || true
+
+          echo 'V34_ANON_AUTH_CLASSES_DONE=1'
