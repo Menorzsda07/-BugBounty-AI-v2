@@ -1,0 +1,57 @@
+name: Bugcrowd Skyscanner Partner Portal OAuth State V15
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-partnerportal-oauth-state-v15.yml'
+  workflow_dispatch:
+
+jobs:
+  oauth-state:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check callback transaction/session requirements
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-OAuth-State/1.0'
+          BASE='https://partnerportal.skyscanner.net'
+
+          echo '=== INIT LOGIN + COOKIE JAR ==='
+          curl -sS --max-time 20 -c /tmp/jar -b /tmp/jar \
+            -H "$HDR" -H "User-Agent: $UA" \
+            -D /tmp/init.h -o /tmp/init.b \
+            "$BASE/authenticate/login?returnUrl=%2F" || true
+          grep -Ei '^(HTTP/|location:|set-cookie:)' /tmp/init.h || true
+          echo 'COOKIE_JAR:'
+          cat /tmp/jar || true
+
+          req() {
+            name="$1"; path="$2"; jar_mode="$3"
+            echo "=== $name ==="
+            if [ "$jar_mode" = withjar ]; then
+              COOKIE_ARGS=(-c /tmp/jar -b /tmp/jar)
+            else
+              COOKIE_ARGS=()
+            fi
+            curl -sS --max-time 20 "${COOKIE_ARGS[@]}" \
+              -H "$HDR" -H "User-Agent: $UA" \
+              -D "/tmp/$name.h" -o "/tmp/$name.b" \
+              "$BASE$path" || true
+            grep -Ei '^(HTTP/|location:|set-cookie:|content-type:|x-service|x-gateway)' "/tmp/$name.h" | head -n 50 || true
+            echo "BODY_BYTES=$(wc -c < /tmp/$name.b 2>/dev/null || echo 0)"
+            head -c 2500 "/tmp/$name.b" 2>/dev/null || true
+            echo
+          }
+
+          req callback_empty_nojar '/authenticate/api/auth0/verify' nojar
+          req callback_invalid_nojar '/authenticate/api/auth0/verify?code=bugcrowd-invalid' nojar
+          req callback_invalid_state_nojar '/authenticate/api/auth0/verify?code=bugcrowd-invalid&state=bugcrowd-state' nojar
+          req callback_invalid_withjar '/authenticate/api/auth0/verify?code=bugcrowd-invalid' withjar
+          req callback_error_nojar '/authenticate/api/auth0/verify?error=access_denied&error_description=bugcrowd-test' nojar
+
+          echo '=== FINAL COOKIE JAR ==='
+          cat /tmp/jar || true
+          echo 'V15_OAUTH_STATE_DONE=1'
