@@ -1,0 +1,51 @@
+name: Bugcrowd Skyscanner Saved Identifiers Static V26
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-saved-identifiers-static-v26.yml'
+  workflow_dispatch:
+
+jobs:
+  identifiers-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Trace Saved IDs, delete tokens and alert IDs in official APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/jadx" "$PWD/classes"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          curl -fsSL --retry 2 --max-time 60 -o /tmp/jadx.zip 'https://github.com/skylot/jadx/releases/download/v1.5.5/jadx-1.5.5.zip'
+          unzip -q /tmp/jadx.zip -d jadx
+          chmod +x jadx/bin/jadx
+
+          extract() {
+            cls="$1"; tag="$2"
+            echo "=== CLASS $cls ==="
+            jadx/bin/jadx --no-res --threads-count 2 --single-class "$cls" --single-class-output "classes/$tag.java" "$APK" >"/tmp/$tag.log" 2>&1 || true
+            tail -n 12 "/tmp/$tag.log" || true
+            [ -f "classes/$tag.java" ] && sed -n '1,1200p' "classes/$tag.java" || true
+          }
+
+          extract 'net.skyscanner.savedexperienceapi.v2.FlightItineraryCardDto' flight_card
+          extract 'net.skyscanner.savedexperienceapi.v2.HotelStayCardDto' hotel_card
+          extract 'net.skyscanner.savedexperienceapi.v2.CarHireDealGroupCardDto' car_card
+          extract 'net.skyscanner.pricealerts.dto.PriceAlertDto' alert_dto
+          extract 'net.skyscanner.savedexperienceapi.v2.DeleteItemRequestDto$$serializer' delete_serializer
+          extract 'net.skyscanner.savedexperienceapi.v2.UpdateFlightItineraryItemPriceAlertRequestDto$$serializer' update_serializer
+          extract 'net.skyscanner.savedexperienceapi.v2.UnsubscribeFlightItineraryItemPriceAlertRequestDto$$serializer' unsub_serializer
+
+          echo '=== IDENTIFIER/TOKEN FIELDS ==='
+          grep -RInE '(savedId|saved_id|deleteToken|delete_token|priceAlertId|price_alert|alertId|actionId|principalService|token|owner|user|account|traveller|uuid|UUID|@JsonProperty)' classes 2>/dev/null | head -n 2200 || true
+
+          echo '=== DEX STRINGS AROUND SAVED/TOKEN ==='
+          mkdir -p /tmp/apkraw; unzip -q "$APK" -d /tmp/apkraw
+          for f in /tmp/apkraw/classes*.dex; do strings -n 5 "$f"; done \
+            | grep -Ei '(savedId|saved_id|deleteToken|delete_token|priceAlertId|price_alert_id|principalService|DeleteItemRequestDto|UpdateFlightItineraryItemPriceAlertRequestDto)' \
+            | sort -u | head -n 700 || true
+          echo 'V26_SAVED_IDENTIFIERS_DONE=1'
