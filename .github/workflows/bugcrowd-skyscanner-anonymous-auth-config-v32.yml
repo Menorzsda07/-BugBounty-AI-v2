@@ -1,0 +1,48 @@
+name: Bugcrowd Skyscanner Anonymous Auth Config V32
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-anonymous-auth-config-v32.yml'
+  workflow_dispatch:
+
+jobs:
+  anonymous-auth-config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Inspect packaged config defaults for anonymous auth
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/apkraw"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          unzip -q "$APK" -d apkraw
+
+          echo '=== PACKAGED FILES THAT MAY CONTAIN REMOTE/DEFAULT CONFIG ==='
+          find apkraw -type f | grep -Ei '(remote.?config|firebase|default|experiment|identity|auth|config|feature|flag)' | head -n 500 || true
+
+          echo '=== TEXT/BINARY STRING CONTEXT AROUND ANON CONFIG KEYS ==='
+          grep -RIna -E -C 8 '(Identity_AnonymousClientID|Identity_AnonymousTokenGrantType|Anonymous Client ID|Anonymous Token Grant Type|AnonymousAuthorizationEndpoint)' apkraw 2>/dev/null | head -n 1200 || true
+
+          echo '=== RESOURCES.ARSC NEAR KEYS ==='
+          strings -n 4 apkraw/resources.arsc 2>/dev/null > /tmp/arsc.strings || true
+          python3 - <<'PY'
+          keys=['Identity_AnonymousClientID','Identity_AnonymousTokenGrantType','Identity_AnonymousAuthorizationEndpoint','Anonymous Client ID','Anonymous Token Grant Type']
+          lines=open('/tmp/arsc.strings','r',errors='replace').read().splitlines()
+          for i,l in enumerate(lines):
+              if any(k.lower() in l.lower() for k in keys):
+                  print(f'--- index {i}: {l!r} ---')
+                  for j in range(max(0,i-30), min(len(lines),i+31)):
+                      print(f'{j}: {lines[j]}')
+          PY
+
+          echo '=== ASSET FILE STRING CONTEXT ==='
+          find apkraw/assets apkraw/res -type f 2>/dev/null | while read -r f; do
+            strings -n 4 "$f" 2>/dev/null | grep -Ei -C 5 '(Identity_AnonymousClientID|Identity_AnonymousTokenGrantType|anonymous-auth-service|anonymous token grant|anonymous client)' && echo "FILE=$f" || true
+          done | head -n 1200 || true
+
+          echo 'V32_ANON_AUTH_CONFIG_DONE=1'
