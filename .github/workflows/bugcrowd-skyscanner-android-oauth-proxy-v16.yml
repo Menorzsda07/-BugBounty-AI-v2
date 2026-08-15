@@ -1,0 +1,54 @@
+name: Bugcrowd Skyscanner Android OAuth Proxy V16
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-android-oauth-proxy-v16.yml'
+  workflow_dispatch:
+
+jobs:
+  oauth-proxy-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    steps:
+      - name: Inspect exported OAuth router and downstream receivers
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/jadx" "$PWD/classes"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable \
+            -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n1)
+
+          echo '=== MANIFEST OAUTH/WEBVIEW/FILEPROVIDER CONTEXT ==='
+          "$AAPT" dump xmltree "$APK" AndroidManifest.xml > /tmp/manifest.txt
+          grep -n -E -B7 -A22 '(OAuthRedirectRouterActivity|RedirectUriReceiverActivity|com.okta.webauthenticationui.RedirectActivity|PartnerWebViewActivity|PartnerWebViewComposeActivity|FileProvider|provider_paths)' /tmp/manifest.txt | head -n 650 || true
+
+          curl -fsSL --retry 2 --max-time 60 -o /tmp/jadx.zip \
+            'https://github.com/skylot/jadx/releases/download/v1.5.5/jadx-1.5.5.zip'
+          unzip -q /tmp/jadx.zip -d jadx
+          chmod +x jadx/bin/jadx
+
+          extract() {
+            cls="$1"; tag="$2"
+            echo "=== CLASS $cls ==="
+            set +e
+            jadx/bin/jadx --no-res --threads-count 2 --single-class "$cls" \
+              --single-class-output "classes/${tag}.java" "$APK" >"/tmp/${tag}.log" 2>&1
+            rc=$?
+            set -e
+            echo "RC=$rc"
+            tail -n 30 "/tmp/${tag}.log" || true
+            [ -f "classes/${tag}.java" ] && sed -n '1,650p' "classes/${tag}.java" || true
+          }
+
+          extract 'com.okta.webauthenticationui.RedirectActivity' okta_redirect
+          extract 'net.openid.appauth.RedirectUriReceiverActivity' appauth_receiver
+          extract 'net.openid.appauth.AuthorizationManagementActivity' appauth_management
+
+          echo '=== CALLBACK SECURITY TERMS ==='
+          grep -RInE '(getIntent|getData|getDataString|state|nonce|code_verifier|codeVerifier|code_challenge|redirect|AuthorizationException|resume|pendingIntent|Intent)' classes 2>/dev/null | head -n 900 || true
+          echo 'V16_OAUTH_PROXY_STATIC_DONE=1'
