@@ -1,0 +1,52 @@
+name: Bugcrowd Skyscanner Android AssetLinks V9
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-android-assetlinks-v9.yml'
+  workflow_dispatch:
+
+jobs:
+  assetlinks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Targeted Asset Links checks with Bugcrowd header
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-AssetLinks/1.0'
+
+          check() {
+            url="$1"
+            name="$2"
+            echo "=== $name ==="
+            curl -sS --max-time 20 \
+              -H "$HDR" \
+              -H "User-Agent: $UA" \
+              -H 'Accept: application/json' \
+              -D "/tmp/${name}.headers" \
+              -o "/tmp/${name}.body" \
+              "$url" || true
+            sed -n '1,40p' "/tmp/${name}.headers" || true
+            echo "BODY_BYTES=$(wc -c < /tmp/${name}.body 2>/dev/null || echo 0)"
+            python3 - "$name" <<'PY'
+          import json,sys,os
+          name=sys.argv[1]
+          p=f'/tmp/{name}.body'
+          if not os.path.exists(p):
+              raise SystemExit
+          raw=open(p,'rb').read(50000)
+          try:
+              obj=json.loads(raw)
+              print(json.dumps(obj,indent=2)[:40000])
+          except Exception:
+              print(raw.decode('utf-8','replace')[:4000])
+          PY
+          }
+
+          check 'https://skyscanner.net/.well-known/assetlinks.json' root
+          check 'https://www.skyscanner.net/.well-known/assetlinks.json' www
+          check 'https://mobile.ds.skyscanner.net/.well-known/assetlinks.json' mobile_ds
+          echo 'V9_ASSETLINKS_DONE=1'
