@@ -10,11 +10,11 @@
 - **Platform:** Bugcrowd
 - **Program:** Skyscanner
 - **Status through the latest completed hypothesis:** `NEGATIVE`
-- **Latest completed research version:** v36
-- **Latest consolidation commit on main:** `e38163b13751e40b3a1969f98f82da48a68b884f`
-- **Confirmed reportable vulnerabilities recovered through v36:** **0**
+- **Latest completed research version:** v39
+- **Latest completed evidence commit on main:** `556909daafdaa00037ce349837ab3e18aff35663`
+- **Confirmed reportable vulnerabilities recovered through v39:** **0**
 - **Confirmed bounty from findings so far:** **USD 0**
-- **Next recorded hypothesis:** `PLANNED`, not yet executed
+- **Next recorded hypothesis:** v40 profile auth/session and card-token contract mapping (`PLANNED`)
 
 ### Program rules recovered on 2026-08-15
 
@@ -243,33 +243,101 @@ Interpretation: hypothesis disproved under the tested conditions.
 
 Do not report it as a vulnerability.
 
+### v37 — derive the anonymous refresh contract from the official Android client
+
+**Status:** `NEGATIVE` / static reconnaissance only  
+**Finding bounty:** **USD 0**
+
+Workflow/evidence:
+
+- `.github/workflows/bugcrowd-skyscanner-anonymous-refresh-contract-v37.yml`
+- commit: `614536a2a844881f8dcb515da907576bacf89b5f`
+- run: `31908722896`
+- job: `95070460183`
+
+Result:
+
+- the current official Android package contained the anonymous token endpoint and the expected OAuth field names;
+- the static output alone did not prove that the generic refresh builder belonged to the anonymous identity flow;
+- no live Skyscanner request was made in v37.
+
+### v38 — trace the anonymous refresh call graph
+
+**Status:** `NEGATIVE` / static reconnaissance only  
+**Finding bounty:** **USD 0**
+
+Workflow/evidence:
+
+- `.github/workflows/bugcrowd-skyscanner-anonymous-refresh-callgraph-v38.yml`
+- commit: `c4070a72084188d02bc033c4e1bfa9fdb07f5a65`
+- run: `31908931487`
+- job: `95070960042`
+
+Result:
+
+- the same anonymous-identity component uses `grant_type=anonymous` to issue credentials and `grant_type=refresh_token` to renew them;
+- the trusted-anonymous setting is a remote/configuration rollout flag, not a researcher-facing “Trusted Access” page;
+- its decompiled default of disabled/zero is not a vulnerability by itself;
+- no live Skyscanner request was made in v38.
+
+### v39 — controlled anonymous refresh-token identity binding
+
+**Status:** `NEGATIVE`  
+**Finding bounty:** **USD 0**
+
+Workflow/evidence:
+
+- `.github/workflows/bugcrowd-skyscanner-anonymous-refresh-binding-v39.yml`
+- commit: `556909daafdaa00037ce349837ab3e18aff35663`
+- run: `31909238582`
+- job: `95071708544`
+
+Controlled request model:
+
+1. Create independently controlled anonymous identities A and B.
+2. Refresh A normally.
+3. Refresh B while adding A's controlled `previous_utid` as an extra parameter.
+4. Compare only truncated hashes and equality booleans; never log raw credentials or UTIDs.
+
+Observed result:
+
+- A and B were distinct;
+- A's baseline refresh remained A;
+- B's mismatched refresh remained B;
+- B did not switch to A;
+- the endpoint returned no traveller/account data.
+
+Interpretation: the refresh token remained bound to its originating anonymous identity and the expected authorization boundary held. Do not report this behavior as a vulnerability.
+
 ---
 
 ## Next non-duplicative research point
 
-### v37 candidate — anonymous refresh-token identity binding
+### v40 candidate — profile auth/session and card-token contract mapping
 
 **Status:** `PLANNED` — **not executed as of this consolidation**.
 
 Goal:
 
-Using only two independently created researcher-controlled anonymous identities, determine whether an anonymous refresh token remains cryptographically/logically bound to its originating identity and client context.
+Passively map the current `skyscanner.net/profile/*` client routes, API contracts and redirect/session handling highlighted by the live Bugcrowd brief, then select one low-volume validation that has a concrete security boundary.
 
-Security condition of interest:
+Security conditions of interest include:
 
-- a genuine bug would require a controlled cross-identity result such as refresh material from A being accepted in a way that produces B's identity/state, crosses an authorization boundary, or creates another reproducible identity-confusion impact;
-- a normal refresh of A back into A, or clean rejection of mismatched state, is `NEGATIVE`.
+- a real open redirect that can leave the allowed Skyscanner origin;
+- session or authorization confusion between two researcher-owned accounts;
+- exposure or insecure reuse of card/payment tokens belonging only to researcher-controlled test data;
+- a reproducible authorization failure or sensitive information disclosure.
 
 Safety boundary:
 
-- only controlled anonymous identities;
-- no third-party UTIDs/tokens/data;
-- no brute force or token guessing;
-- no high-rate automation;
-- use mandatory Bugcrowd header;
-- stop on any unexpected real traveller data.
+- begin with static/public client assets and manual navigation;
+- only researcher-owned `@bugcrowdninja.com` accounts if authentication is required;
+- never use a real traveller's details or payment card;
+- no form/account spam, brute force, broad scanner or high-rate automation;
+- use the mandatory Bugcrowd header for research requests;
+- stop immediately if third-party data appears.
 
-Before running, derive the exact refresh grant request contract from the already-downloaded official client/package or a current official client version. Do not guess parameters at scale.
+The v40 mapping must avoid repeating the generic OAuth, Partner Portal, CORS and Saved-experience checks already closed in v8–v39.
 
 ---
 
@@ -280,7 +348,10 @@ Before running, derive the exact refresh grant request contract from the already
 | Android/OAuth/Partner Portal surface families through v34 | No confirmed issue recovered | N/A | USD 0 confirmed |
 | v35 two anonymous identities | `NEGATIVE` | N/A | USD 0 |
 | v36 `previous_utid` reclaim | `NEGATIVE` | N/A | USD 0 |
-| v37 refresh-token binding | `PLANNED` | unknown | not applicable until executed |
+| v37 refresh contract, static | `NEGATIVE` | N/A | USD 0 |
+| v38 anonymous refresh call graph, static | `NEGATIVE` | N/A | USD 0 |
+| v39 refresh-token identity binding | `NEGATIVE` | N/A | USD 0 |
+| v40 profile contract mapping | `PLANNED` | unknown | not applicable until executed |
 
 If a future test becomes a real finding, add it here immediately with the program's priority range beside it. Do not show the program-wide maximum as though it were the expected payout for an unvalidated candidate.
 
