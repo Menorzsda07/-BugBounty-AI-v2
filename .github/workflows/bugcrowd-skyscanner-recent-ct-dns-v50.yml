@@ -1,0 +1,148 @@
+name: Bugcrowd Skyscanner Recent CT DNS AWS V50
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-recent-ct-dns-v50.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recent-ct-dns:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check recent certificate names with DNS only
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'SCOPE_CHECK_DATE=2026-08-15'
+          echo 'PASSIVE_CT_REQUESTS=1'
+          echo 'HTTP_REQUESTS_TO_SKYSCANNER=0'
+          echo 'MAX_DNS_HOSTS=25'
+
+          curl -fsSL --retry 2 --max-time 75 --max-filesize 25000000 \
+            -H 'User-Agent: Bugcrowd-Skyscanner-Passive-CT-Research/1.0' \
+            -o /tmp/v50-ct.json \
+            'https://crt.sh/?q=%25.skyscanner.net&output=json'
+          echo "V50_CT_BYTES=$(wc -c </tmp/v50-ct.json)"
+          echo "V50_CT_SHA256=$(sha256sum /tmp/v50-ct.json | cut -d' ' -f1)"
+
+          if ! command -v dig >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq dnsutils
+          fi
+
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json, re, subprocess, time
+
+          now = datetime(2026, 8, 15, tzinfo=timezone.utc)
+          rows = json.loads(Path("/tmp/v50-ct.json").read_text(errors="replace"))
+          valid_host = re.compile(
+              r"(?i)^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+skyscanner\.net$"
+          )
+          newest = {}
+          valid_cert_rows = 0
+
+          def parse_date(value):
+              if not value:
+                  return None
+              value = value.replace("Z", "+00:00")
+              try:
+                  dt = datetime.fromisoformat(value)
+                  if dt.tzinfo is None:
+                      dt = dt.replace(tzinfo=timezone.utc)
+                  return dt.astimezone(timezone.utc)
+              except ValueError:
+                  return None
+
+          for row in rows:
+              not_after = parse_date(row.get("not_after", ""))
+              issued = parse_date(row.get("entry_timestamp", ""))
+              if not_after is None or not_after < now:
+                  continue
+              valid_cert_rows += 1
+              for raw in str(row.get("name_value", "")).splitlines():
+                  host = raw.strip().lower().rstrip(".")
+                  if "*" in host or not valid_host.fullmatch(host):
+                      continue
+                  previous = newest.get(host)
+                  if previous is None or (issued and issued > previous):
+                      newest[host] = issued or datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+          priority_terms = (
+              "dev", "test", "stage", "staging", "sandbox", "preview",
+              "demo", "static", "asset", "cdn", "edge", "api", "gateway",
+              "legacy", "old"
+          )
+          def rank(item):
+              host, issued = item
+              priority = sum(1 for term in priority_terms if term in host)
+              return (-priority, -issued.timestamp(), host)
+
+          selected = [host for host, _ in sorted(newest.items(), key=rank)[:25]]
+          print(f"V50_CT_ROWS={len(rows)}")
+          print(f"V50_VALID_CERT_ROWS={valid_cert_rows}")
+          print(f"V50_CURRENT_UNIQUE_HOSTS={len(newest)}")
+          print(f"V50_SELECTED_HOSTS={len(selected)}")
+          for host in selected:
+              print(f"CT_HOST_SELECTED={host}")
+
+          provider_suffixes = (
+              ".amazonaws.com", ".cloudfront.net", ".herokudns.com",
+              ".github.io", ".azurewebsites.net", ".trafficmanager.net",
+              ".fastly.net", ".fastlylb.net", ".vercel-dns.com",
+              ".netlify.app", ".pages.dev"
+          )
+
+          def dig(rrtype, name, comments=False):
+              args = ["dig", "+time=3", "+tries=1"]
+              args += ["+noall", "+comments"] if comments else ["+short"]
+              args += [rrtype, name]
+              p = subprocess.run(args, text=True, capture_output=True, timeout=8)
+              return p.stdout.strip()
+
+          candidates = []
+          provider_live = []
+          for index, host in enumerate(selected, 1):
+              cnames = [x.rstrip(".").lower() for x in dig("CNAME", host).splitlines() if x.strip()]
+              cname = cnames[-1] if cnames else ""
+              addresses = [x for x in dig("A", host).splitlines() if x.strip()]
+              addresses6 = [x for x in dig("AAAA", host).splitlines() if x.strip()]
+              target_status = "NONE"
+              if cname:
+                  comments = dig("CNAME", cname, comments=True)
+                  m = re.search(r"status:\s*([A-Z]+)", comments)
+                  target_status = m.group(1) if m else "UNKNOWN"
+              provider = any(cname.endswith(suffix) for suffix in provider_suffixes)
+              verdict = "RESOLVES_OR_NO_DANGLING_SIGNAL"
+              if cname and target_status == "NXDOMAIN":
+                  verdict = "DANGLING_CNAME_CANDIDATE_REVIEW"
+                  candidates.append((host, cname, verdict))
+              elif cname and provider and not addresses and not addresses6:
+                  verdict = "PROVIDER_CNAME_WITHOUT_ADDRESS_REVIEW"
+                  candidates.append((host, cname, verdict))
+              elif provider:
+                  provider_live.append((host, cname))
+              elif not cname and not addresses and not addresses6:
+                  verdict = "CURRENT_CERT_NAME_NO_DNS_RECORD_NOT_TAKEOVER_ALONE"
+
+              print(
+                  f"DNS index={index} host={host} cname={cname or '<none>'} "
+                  f"a_count={len(addresses)} aaaa_count={len(addresses6)} "
+                  f"target_status={target_status} provider_suffix={provider} verdict={verdict}"
+              )
+              time.sleep(0.25)
+
+          print(f"V50_PROVIDER_LIVE_COUNT={len(provider_live)}")
+          for host, cname in provider_live:
+              print(f"PROVIDER_LIVE host={host} cname={cname}")
+          print(f"V50_CANDIDATE_COUNT={len(candidates)}")
+          for host, cname, verdict in candidates:
+              print(f"CANDIDATE host={host} cname={cname} verdict={verdict}")
+          print("V50_RECENT_CT_DNS_DONE=1")
+          PY
