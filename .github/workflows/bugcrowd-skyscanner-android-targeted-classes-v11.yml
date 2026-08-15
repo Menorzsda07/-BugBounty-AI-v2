@@ -1,0 +1,61 @@
+name: Bugcrowd Skyscanner Android Targeted Classes V11
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-android-targeted-classes-v11.yml'
+  workflow_dispatch:
+
+jobs:
+  targeted-classes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Decompile exact security-relevant classes only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/jadx" "$PWD/classes"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable \
+            -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          test -f "$APK"
+
+          curl -fsSL --retry 2 --max-time 60 \
+            -o /tmp/jadx.zip \
+            'https://github.com/skylot/jadx/releases/download/v1.5.5/jadx-1.5.5.zip'
+          unzip -q /tmp/jadx.zip -d jadx
+          chmod +x jadx/bin/jadx
+          jadx/bin/jadx --version
+          echo '=== SINGLE CLASS HELP ==='
+          jadx/bin/jadx --help | grep -E -A2 -B2 'single-class|single-class-output' || true
+
+          extract() {
+            cls="$1"; tag="$2"
+            echo "=== CLASS $cls ==="
+            set +e
+            jadx/bin/jadx --no-res --threads-count 2 \
+              --single-class "$cls" \
+              --single-class-output "classes/${tag}.java" \
+              "$APK" >"/tmp/${tag}.log" 2>&1
+            rc=$?
+            set -e
+            echo "RC=$rc"
+            cat "/tmp/${tag}.log" | tail -n 50 || true
+            if [ -f "classes/${tag}.java" ]; then
+              sed -n '1,520p' "classes/${tag}.java"
+            else
+              echo 'NO_SINGLE_CLASS_OUTPUT'
+            fi
+          }
+
+          extract 'net.skyscanner.identity.identityv2.socialsignin.OAuthRedirectRouterActivity' oauth
+          extract 'net.skyscanner.shell.ui.activity.SplashActivity' splash
+          extract 'net.skyscanner.apptoapp.ui.PartnerWebViewActivity' partner_webview
+          extract 'net.skyscanner.apptoapp.ui.PartnerWebViewComposeActivity' partner_webview_compose
+
+          echo '=== OUTPUT SECURITY TERMS ==='
+          grep -RInE '(getData|getIntent|Uri|state|code|redirect|loadUrl|javascript|JavaScript|WebView|scheme|host|deep|oauth|token|intent)' classes 2>/dev/null | head -n 500 || true
+          echo 'V11_TARGETED_CLASSES_DONE=1'
