@@ -1,0 +1,88 @@
+name: Bugcrowd Skyscanner Login ReturnUrl V43
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-login-returnurl-v43.yml'
+  workflow_dispatch:
+
+jobs:
+  login-returnurl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Inspect first-hop login returnUrl handling without following identity provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-LoginReturnUrl/1.0'
+          LOGIN='https://www.skyscanner.net/account/login/'
+          MARKER='bbv43marker'
+
+          request_once() {
+            tag="$1"
+            url="$2"
+            code=$(curl -sS --max-time 25 --max-redirs 0               -H "$HDR" -H "User-Agent: $UA"               -H 'Accept: text/html,application/xhtml+xml'               -D "/tmp/$tag.h" -o "/tmp/$tag.b"               -w '%{http_code}' "$url" || true)
+            echo "V43_$tag"_HTTP="$code"
+            python3 - "$tag" "$MARKER" <<'PY'
+          import os, re, sys
+          from urllib.parse import parse_qs, unquote, urlparse
+
+          tag, marker = sys.argv[1:3]
+          headers = open(f"/tmp/{tag}.h", "r", errors="replace").read() if os.path.exists(f"/tmp/{tag}.h") else ""
+          body = open(f"/tmp/{tag}.b", "rb").read(250000) if os.path.exists(f"/tmp/{tag}.b") else b""
+          locations = re.findall(r"^location:\s*(.+?)\s*$", headers, re.I | re.M)
+          location = locations[-1] if locations else ""
+          parsed = urlparse(location)
+          host = (parsed.hostname or "").lower()
+          path = parsed.path or ""
+          query_keys = sorted(parse_qs(parsed.query, keep_blank_values=True).keys())
+
+          decoded = location
+          for _ in range(4):
+              nxt = unquote(decoded)
+              if nxt == decoded:
+                  break
+              decoded = nxt
+          marker_propagated = marker.lower() in decoded.lower()
+          example_propagated = "example.com" in decoded.lower()
+          direct_example = host == "example.com" or host.endswith(".example.com")
+          same_skyscanner = host == "" or host == "skyscanner.net" or host.endswith(".skyscanner.net")
+          is_identity_provider = any(x in host for x in ("auth0", "okta", "identity", "login"))
+
+          print(f"V43_{tag}_BODY_BYTES={len(body)}")
+          print(f"V43_{tag}_HAS_LOCATION={bool(location)}")
+          print(f"V43_{tag}_LOCATION_SCHEME={parsed.scheme or '<relative>'}")
+          print(f"V43_{tag}_LOCATION_HOST={host or '<relative>'}")
+          print(f"V43_{tag}_LOCATION_PATH={path[:220] or '<none>'}")
+          print(f"V43_{tag}_QUERY_KEYS={query_keys}")
+          print(f"V43_{tag}_DIRECT_EXAMPLE_REDIRECT={direct_example}")
+          print(f"V43_{tag}_SAME_SKYSCANNER_LOCATION={same_skyscanner}")
+          print(f"V43_{tag}_IDENTITY_PROVIDER_LOCATION={is_identity_provider}")
+          print(f"V43_{tag}_MARKER_PROPAGATED={marker_propagated}")
+          print(f"V43_{tag}_EXAMPLE_PROPAGATED={example_propagated}")
+          print(f"V43_{tag}_MARKER_REFLECTED_IN_BODY={marker.encode() in body.lower()}")
+          open(f"/tmp/{tag}.direct", "w").write("1" if direct_example else "0")
+          open(f"/tmp/{tag}.propagated", "w").write("1" if marker_propagated or example_propagated else "0")
+          PY
+          }
+
+          request_once baseline "$LOGIN"
+          sleep 1
+          request_once returnurl "$LOGIN?returnUrl=https%3A%2F%2Fexample.com%2Fbbv43marker"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          direct = int(Path("/tmp/returnurl.direct").read_text())
+          propagated = int(Path("/tmp/returnurl.propagated").read_text())
+          if direct:
+              verdict = "CANDIDATE_DIRECT_OPEN_REDIRECT_REVIEW_REQUIRED"
+          elif propagated:
+              verdict = "INCONCLUSIVE_POST_AUTH_RETURNURL_REQUIRES_OWN_SESSION"
+          else:
+              verdict = "NEGATIVE_RETURNURL_NOT_PROPAGATED"
+          print("V43_VERDICT=", verdict)
+          print("V43_LOGIN_RETURNURL_DONE=1")
+          PY
