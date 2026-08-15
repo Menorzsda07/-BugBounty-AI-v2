@@ -1,0 +1,40 @@
+name: Bugcrowd Skyscanner Android Security Config V12
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-android-security-config-v12.yml'
+  workflow_dispatch:
+
+jobs:
+  config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Inspect Android network and provider XML resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable \
+            -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n1)
+
+          echo '=== XML RESOURCE CANDIDATES ==='
+          unzip -l "$APK" | grep -Ei 'res/xml/.*(network|security|provider|path|backup|extraction|file).*\.xml' | head -n 120 || true
+
+          echo '=== RESOURCE ID 0x7f18000b MAPPING ==='
+          "$AAPT" dump resources "$APK" | grep -A15 -B8 '0x7f18000b' || true
+
+          echo '=== SECURITY XMLTREES ==='
+          for x in $(unzip -Z1 "$APK" | grep -Ei '^res/xml/.*(network|security|provider|path|backup|extraction|file).*\.xml$' | head -n 50); do
+            echo "--- $x ---"
+            "$AAPT" dump xmltree "$APK" "$x" 2>/dev/null | sed -n '1,240p' || true
+          done
+
+          echo '=== MANIFEST NETWORK FLAGS ==='
+          "$AAPT" dump xmltree "$APK" AndroidManifest.xml | grep -E -B3 -A5 'usesCleartextTraffic|networkSecurityConfig|allowBackup|fullBackupContent|dataExtractionRules' || true
+          echo 'V12_SECURITY_CONFIG_DONE=1'
