@@ -1,0 +1,71 @@
+name: Bugcrowd YNAB targeted probe
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-ynab-targeted-probe.yml'
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Exact-scope HTTP and frontend checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python3 - <<'PY'
+          import re, subprocess, urllib.parse, json, os
+          targets=['https://staging-app.bany.dev/','https://staging-api.bany.dev/','https://www.ynab.com/']
+          allow={urllib.parse.urlsplit(x).hostname for x in targets}
+          paths=['/','/robots.txt','/.well-known/security.txt','/openapi.json','/swagger.json','/graphql','/api','/api/v1','/api/me','/api/user','/api/account']
+          rows=[]
+          def curl(url, extra=None):
+              h='/tmp/h'; b='/tmp/b'
+              cmd=['curl','-ksS','--max-time','12','--max-redirs','0','-A','BugBounty-AI scoped-security-research','-D',h,'-o',b,'-w','%{http_code} %{size_download} %{content_type}',url]
+              if extra: cmd[1:1]=extra
+              p=subprocess.run(cmd,text=True,capture_output=True)
+              headers=open(h,errors='replace').read() if os.path.exists(h) else ''
+              body=open(b,'rb').read() if os.path.exists(b) else b''
+              return p.stdout.strip(), headers, body
+          for base in targets:
+              host=urllib.parse.urlsplit(base).hostname
+              for path in paths:
+                  u=urllib.parse.urljoin(base,path)
+                  if urllib.parse.urlsplit(u).hostname not in allow: continue
+                  meta,h,b=curl(u)
+                  rows.append({'url':u,'meta':meta,'location':next((x.split(':',1)[1].strip() for x in h.splitlines() if x.lower().startswith('location:')),''),'acao':next((x.split(':',1)[1].strip() for x in h.splitlines() if x.lower().startswith('access-control-allow-origin:')),''),'acac':next((x.split(':',1)[1].strip() for x in h.splitlines() if x.lower().startswith('access-control-allow-credentials:')),''),'body_prefix':b[:240].decode('utf-8','replace')})
+              # CORS reflection check on root only
+              meta,h,b=curl(base,['-H','Origin: https://attacker.invalid'])
+              rows.append({'url':base,'probe':'cors','meta':meta,'acao':next((x.split(':',1)[1].strip() for x in h.splitlines() if x.lower().startswith('access-control-allow-origin:')),''),'acac':next((x.split(':',1)[1].strip() for x in h.splitlines() if x.lower().startswith('access-control-allow-credentials:')),'')})
+              # benign reflection and redirect parameters
+              for q in ['bbai_probe=ynab7391','redirect=https%3A%2F%2Fexample.invalid%2F','next=https%3A%2F%2Fexample.invalid%2F']:
+                  u=base+'?'+q
+                  meta,h,b=curl(u)
+                  rows.append({'url':u,'probe':'query','meta':meta,'location':next((x.split(':',1)[1].strip() for x in h.splitlines() if x.lower().startswith('location:')),''),'marker_reflected':'ynab7391' in b.decode('utf-8','replace')})
+              # same-host script inventory and source-map references
+              meta,h,body=curl(base)
+              text=body.decode('utf-8','replace')
+              scripts=re.findall(r'<script[^>]+src=["\']([^"\']+)', text, re.I)[:30]
+              for ref in scripts:
+                  u=urllib.parse.urljoin(base,ref)
+                  if urllib.parse.urlsplit(u).hostname != host: continue
+                  m,hh,bb=curl(u)
+                  t=bb.decode('utf-8','replace')
+                  maps=re.findall(r'(?i)sourceMappingURL\s*=\s*([^\s*]+)',t[-120000:])[:10]
+                  hints=sorted(set(re.findall(r'["\'](/[^"\']{2,160})["\']',t[:1500000])))
+                  interesting=[x for x in hints if any(k in x.lower() for k in ['api','auth','oauth','token','account','user','admin','graphql','redirect'])][:80]
+                  rows.append({'url':u,'probe':'same_host_js','meta':m,'maps':maps,'interesting_routes':interesting})
+          with open('out/ynab-probe.json','w') as f: json.dump(rows,f,indent=2)
+          print('ROWS',len(rows))
+          for r in rows:
+              if r.get('acao') or r.get('location') or r.get('marker_reflected') or r.get('maps') or r.get('interesting_routes'):
+                  print(json.dumps(r)[:1500])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ynab-targeted-probe
+          path: out/ynab-probe.json
+          retention-days: 2
