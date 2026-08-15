@@ -1,0 +1,49 @@
+name: Bugcrowd Skyscanner Scope Extract V2
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-scope-extract-v2.yml'
+  workflow_dispatch:
+
+jobs:
+  scope-extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch and inspect public Bugcrowd engagement metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sS --max-time 20 \
+            -H 'User-Agent: Mozilla/5.0 Bugcrowd-Research-Scope-Check/1.0' \
+            -o /tmp/bc.html \
+            'https://bugcrowd.com/engagements/skyscanner'
+          python3 - <<'PY'
+          import html, re
+          p='/tmp/bc.html'
+          s=html.unescape(open(p,encoding='utf-8',errors='replace').read())
+          print('HTML_BYTES', len(s))
+          terms=[
+            'gateway.skyscanner.net','partnerportal.skyscanner.net','skyscanner.net',
+            'skyscanner.com','Android','iOS','AWS','scope','target','reward','bounty',
+            'Save-to-list','Multi Passenger'
+          ]
+          low=s.lower()
+          for term in terms:
+              start=0; count=0
+              while True:
+                  i=low.find(term.lower(), start)
+                  if i<0 or count>=8: break
+                  a=max(0,i-260); b=min(len(s),i+520)
+                  snippet=re.sub(r'\s+',' ',s[a:b])
+                  print(f'\n=== TERM {term} #{count+1} ===')
+                  print(snippet)
+                  start=i+len(term); count+=1
+              print(f'TERM_COUNT {term} {low.count(term.lower())}')
+          # Print likely JSON keys only, not session/cookie material.
+          keys=sorted(set(re.findall(r'"([A-Za-z][A-Za-z0-9_]{2,40})"\s*:', s)))
+          interesting=[k for k in keys if any(x in k.lower() for x in ('scope','target','reward','engagement','brief','bounty'))]
+          print('\nINTERESTING_KEYS', interesting[:100])
+          print('V2_SCOPE_EXTRACT_DONE=1')
+          PY
