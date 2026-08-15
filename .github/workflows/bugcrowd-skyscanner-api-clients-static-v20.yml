@@ -1,0 +1,62 @@
+name: Bugcrowd Skyscanner API Clients Static V20
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-api-clients-static-v20.yml'
+  workflow_dispatch:
+
+jobs:
+  api-clients-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 24
+    steps:
+      - name: Decompile exact account and Saved API client classes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/jadx" "$PWD/classes"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable \
+            -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          test -f "$APK"
+
+          curl -fsSL --retry 2 --max-time 60 -o /tmp/jadx.zip \
+            'https://github.com/skylot/jadx/releases/download/v1.5.5/jadx-1.5.5.zip'
+          unzip -q /tmp/jadx.zip -d jadx
+          chmod +x jadx/bin/jadx
+
+          extract() {
+            cls="$1"; tag="$2"
+            echo "=== CLASS $cls ==="
+            set +e
+            jadx/bin/jadx --no-res --threads-count 2 --single-class "$cls" \
+              --single-class-output "classes/${tag}.java" "$APK" >"/tmp/${tag}.log" 2>&1
+            rc=$?
+            set -e
+            echo "RC=$rc"
+            tail -n 30 "/tmp/${tag}.log" || true
+            if [ -f "classes/${tag}.java" ]; then
+              sed -n '1,1200p' "classes/${tag}.java"
+            fi
+          }
+
+          extract 'net.skyscanner.savedexperienceapi.v2.SavedExperienceServiceClient' saved_v2
+          extract 'net.skyscanner.savedexperienceapi.v3alpha.SavedExperienceServiceClient' saved_v3a
+          extract 'net.skyscanner.pricealerts.PriceAlertsHTTPClient' price_alerts
+          extract 'net.skyscanner.identity.identityv2.data.TravellerAuthService' traveller_auth
+
+          echo '=== API / AUTH / OBJECT IDENTIFIER TERMS ==='
+          grep -RInE '(https?://|/g/|v[0-9]+/|GET|POST|PUT|PATCH|DELETE|Authorization|Bearer|token|account.?id|user.?id|list.?id|item.?id|alert.?id|itinerary|save|delete|matching|unsubscribe|price.?alert|profile|passenger|export)' \
+            classes 2>/dev/null | head -n 1800 || true
+
+          echo '=== RELATED CLASS NAMES FROM DEX STRINGS ==='
+          mkdir -p /tmp/apkraw
+          unzip -q "$APK" -d /tmp/apkraw
+          for f in /tmp/apkraw/classes*.dex; do strings -n 4 "$f"; done \
+            | grep -Ei '(SavedExperienceService|savedexperienceapi|PriceAlertsHTTPClient|TravellerAuthService|Profile.*Service|Passenger.*Service)' \
+            | sort -u | head -n 700 || true
+
+          echo 'V20_API_CLIENTS_STATIC_DONE=1'
