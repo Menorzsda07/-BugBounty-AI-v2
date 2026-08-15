@@ -31,24 +31,13 @@ jobs:
           p = Path('src/cbmpc/api/eddsa2pc.cpp')
           s = p.read_text()
           s = s.replace('#include <cbmpc/api/eddsa_2p.h>', '#include <cstdio>\n#include <cbmpc/api/eddsa_2p.h>', 1)
-          old = '''  const auto self = to_internal_party(job.self);
-          if (key.role != self) return coinbase::error(E_BADARG, "job.self mismatch key blob role");
-
-          coinbase::mpc::job_2p_t mpc_job = to_internal_job(job);
-          return coinbase::mpc::eddsa2pc::sign(mpc_job, key, msg, sig);
-          '''
-          new = '''  const auto self = to_internal_party(job.self);
-          if (key.role != self) return coinbase::error(E_BADARG, "job.self mismatch key blob role");
-
-          std::fprintf(stderr, "V46_POST_FREE role=%d size=%d hex=", static_cast<int>(job.self), msg.size);
+          old = '  return coinbase::mpc::eddsa2pc::sign(mpc_job, key, msg, sig);'
+          new = '''  std::fprintf(stderr, "V46_POST_FREE role=%d size=%d hex=", static_cast<int>(job.self), msg.size);
           for (int vi = 0; vi < msg.size; ++vi) std::fprintf(stderr, "%02x", static_cast<unsigned>(msg.data[vi]));
           std::fprintf(stderr, "\\n");
-
-          coinbase::mpc::job_2p_t mpc_job = to_internal_job(job);
-          return coinbase::mpc::eddsa2pc::sign(mpc_job, key, msg, sig);
-          '''
-          if old not in s:
-              raise SystemExit('V46 patch anchor not found')
+          return coinbase::mpc::eddsa2pc::sign(mpc_job, key, msg, sig);'''
+          if s.count(old) != 1:
+              raise SystemExit(f'V46 expected unique anchor, found {s.count(old)}')
           p.write_text(s.replace(old, new, 1))
           PY
           cd ..
