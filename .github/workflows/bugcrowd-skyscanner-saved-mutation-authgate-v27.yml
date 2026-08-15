@@ -1,0 +1,55 @@
+name: Bugcrowd Skyscanner Saved Mutation Auth Gate V27
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-saved-mutation-authgate-v27.yml'
+  workflow_dispatch:
+
+jobs:
+  mutation-authgate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Verify mutation auth gates using deliberately nonexistent identifiers
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-Mutation-AuthGate/1.0'
+          SAVED='https://mobile.ds.skyscanner.net/g/saved-experience-api/'
+          ALERTS='https://mobile.ds.skyscanner.net/g/price-alerts/v1/alerts'
+          BAD_ID='bugcrowd-nonexistent-id-00000000'
+          BAD_TOKEN='bugcrowd-invalid-token-00000000'
+
+          post_json() {
+            name="$1"; url="$2"; body="$3"
+            echo "=== $name ==="
+            curl -sS --max-time 20 -X POST \
+              -H "$HDR" -H "User-Agent: $UA" -H 'Accept: application/json' -H 'Content-Type: application/json' \
+              --data "$body" -D "/tmp/$name.h" -o "/tmp/$name.b" "$url" || true
+            grep -Ei '^(HTTP/|content-type:|www-authenticate:|x-service|x-gateway|location:)' "/tmp/$name.h" | head -n 50 || true
+            echo "BODY_BYTES=$(wc -c < /tmp/$name.b 2>/dev/null || echo 0)"
+            head -c 3500 "/tmp/$name.b" 2>/dev/null || true
+            echo
+          }
+
+          post_json delete_saved "${SAVED}v2/items/delete" \
+            "{\"actionId\":\"bugcrowd-authgate\",\"deleteToken\":\"$BAD_TOKEN\",\"savedId\":\"$BAD_ID\"}"
+
+          post_json update_alert "${SAVED}v2/flight_itinerary/update_price_alert" \
+            "{\"actionId\":\"bugcrowd-authgate\",\"savedId\":\"$BAD_ID\",\"priceAlertWanted\":false,\"locale\":\"en-US\"}"
+
+          post_json unsubscribe_alert "${SAVED}v2/flight_itinerary/unsubscribe_price_alert" \
+            "{\"token\":\"$BAD_TOKEN\",\"priceAlertId\":\"$BAD_ID\",\"principalService\":\"bugcrowd\"}"
+
+          echo '=== legacy_alert_delete ==='
+          curl -sS --max-time 20 -X DELETE \
+            -H "$HDR" -H "User-Agent: $UA" -H 'Accept: application/json' \
+            -D /tmp/legacy.h -o /tmp/legacy.b "${ALERTS}/${BAD_ID}" || true
+          grep -Ei '^(HTTP/|content-type:|www-authenticate:|x-service|x-gateway|location:)' /tmp/legacy.h | head -n 50 || true
+          echo "BODY_BYTES=$(wc -c < /tmp/legacy.b 2>/dev/null || echo 0)"
+          head -c 3500 /tmp/legacy.b 2>/dev/null || true
+          echo
+
+          echo 'V27_MUTATION_AUTHGATE_DONE=1'
