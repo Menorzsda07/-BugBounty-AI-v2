@@ -1,0 +1,39 @@
+name: Bugcrowd Skyscanner Anonymous Auth Baseline V30
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-anonymous-auth-baseline-v30.yml'
+  workflow_dispatch:
+
+jobs:
+  anonymous-auth-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Minimal anonymous auth token endpoint contract checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-AnonymousAuth/1.0'
+          URL='https://www.skyscanner.net/g/anonymous-auth-service/token'
+
+          req() {
+            name="$1"; method="$2"; ctype="$3"; body="$4"
+            echo "=== $name ==="
+            args=(-sS --max-time 20 -X "$method" -H "$HDR" -H "User-Agent: $UA" -H 'Accept: application/json')
+            if [ -n "$ctype" ]; then args+=(-H "Content-Type: $ctype"); fi
+            if [ -n "$body" ]; then args+=(--data "$body"); fi
+            curl "${args[@]}" -D "/tmp/$name.h" -o "/tmp/$name.b" "$URL" || true
+            grep -Ei '^(HTTP/|content-type:|www-authenticate:|access-control-|x-service|x-gateway|location:|set-cookie:)' "/tmp/$name.h" | head -n 70 || true
+            echo "BODY_BYTES=$(wc -c < /tmp/$name.b 2>/dev/null || echo 0)"
+            head -c 4500 "/tmp/$name.b" 2>/dev/null || true
+            echo
+          }
+
+          req options OPTIONS '' ''
+          req get_empty GET '' ''
+          req post_json_empty POST 'application/json' '{}'
+          req post_form_empty POST 'application/x-www-form-urlencoded' 'bugcrowd_contract_probe=1'
+          echo 'V30_ANON_AUTH_BASELINE_DONE=1'
