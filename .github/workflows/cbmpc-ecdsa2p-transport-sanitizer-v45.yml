@@ -60,7 +60,10 @@ jobs:
             scripts/install.sh --mode public --build-type Debug --prefix /code/build/install/v45
             test -d /code/build/install/v45/include/cbmpc/api
             test ! -d /code/build/install/v45/include/cbmpc/internal
-            cmake -S /code/poc-v45 -B /code/build/poc-v45 -DCMAKE_BUILD_TYPE=Debug -DCBMPC_SOURCE_DIR=/code/build/install/v45
+            cmake -S /code/poc-v45 -B /code/build/poc-v45 \
+              -DCMAKE_BUILD_TYPE=Debug \
+              -DCBMPC_REPO_ROOT=/code \
+              -DCBMPC_SOURCE_DIR=/code/build/install/v45
             cmake --build /code/build/poc-v45 -- -j2
             ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:abort_on_error=1" \
             UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1" \
