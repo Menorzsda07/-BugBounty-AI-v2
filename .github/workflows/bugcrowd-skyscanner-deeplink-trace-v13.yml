@@ -1,0 +1,71 @@
+name: Bugcrowd Skyscanner Deeplink Trace V13
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-deeplink-trace-v13.yml'
+  workflow_dispatch:
+
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Acquire and decompile verified Skyscanner 7.204
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/jadx_out"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable -a net.skyscanner.android.main /output
+          unzip -q out/net.skyscanner.android.main.xapk -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n1)
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n1)
+          PKG=$("$AAPT" dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -n1)
+          VER=$("$AAPT" dump badging "$APK" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -n1)
+          CERT=$("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/^V3.0 Signer: certificate SHA-256 digest: //p' | head -n1)
+          test "$PKG" = 'net.skyscanner.android.main'
+          test "$VER" = '7.204'
+          test "$CERT" = 'd7940f8fc2a01fd9ae585538c293fe45eb0fe1ac538605788fe4f68ea580337a'
+          curl -sS -L --max-time 60 -o /tmp/jadx.zip 'https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip'
+          echo '545ea2be9c242511bc145755cf4bda2485ade42966e096f8b4d3da2a230e8974  /tmp/jadx.zip' | sha256sum -c -
+          unzip -q /tmp/jadx.zip -d /tmp/jadx
+          /tmp/jadx/bin/jadx --show-bad-code --no-debug-info --threads-count 4 -d jadx_out "$APK" >/tmp/jadx.log 2>&1 || true
+          echo "DECOMPILED_JAVA=$(find jadx_out/sources -type f -name '*.java' | wc -l)"
+
+      - name: Trace SplashActivity and deep-link parser
+        shell: bash
+        run: |
+          set -euo pipefail
+          S=jadx_out/sources
+          echo '=== SPLASH REFERENCES ==='
+          grep -R -n -E 'SplashActivity|net\.skyscanner\.shell\.ui\.activity\.SplashActivity' "$S/defpackage" "$S/net/skyscanner" 2>/dev/null | head -n 1400 || true
+
+          echo '=== DIRECT INTENT/URI READERS IN OBFS CODE ==='
+          grep -R -n -E -B8 -A28 'getIntent\(\)|getData\(\)|getDataString\(\)|getQueryParameter\(|ACTION_VIEW|android.intent.action.VIEW' "$S/defpackage" 2>/dev/null \
+            | grep -E -B20 -A45 'SplashActivity|deep|link|route|navigation|Uri|Intent|trip|profile|reown' \
+            | head -n 2600 || true
+
+          echo '=== SPLASH IMPORTED OBFUSCATED CLASSES ==='
+          for n in iqh gqh fqh nqh e80 bah lw4 fy9 mye d18; do
+            F="$S/defpackage/$n.java"
+            echo "--- $F ---"
+            [ -f "$F" ] && sed -n '1,900p' "$F" || echo NOT_FOUND
+          done
+
+          echo '=== DEEP LINK FEATURE STRINGS / REOWN ==='
+          grep -R -n -i -E -B10 -A35 'TRIPS_ANONYMOUS_REOWN|ANONYMOUS_REOWN|reown|deep.?link|save.?to.?list|/trips|/profile|discover-with-ai|getdrops' \
+            "$S/net/skyscanner" "$S/defpackage" 2>/dev/null | head -n 3000 || true
+
+      - name: Trace FileProvider grants and path construction
+        shell: bash
+        run: |
+          set -euo pipefail
+          S=jadx_out/sources
+          echo '=== LF7 FULL ==='
+          sed -n '1,260p' "$S/defpackage/lf7.java" || true
+          echo '=== LF7 CALLERS ==='
+          grep -R -n -E -B20 -A45 'lf7\.|new lf7|FileProvider\.c|getUriForFile|\.fileProvider' "$S/net/skyscanner" "$S/defpackage" 2>/dev/null | head -n 2200 || true
+          echo '=== URI GRANT FLAGS ==='
+          grep -R -n -E -B12 -A35 'FLAG_GRANT_(READ|WRITE)_URI_PERMISSION|grantUriPermission\(|addFlags\((1|2|3|65|66|67)' "$S/net/skyscanner" "$S/defpackage" 2>/dev/null | head -n 1800 || true
+          echo 'V13_DEEPLINK_FILEPROVIDER_DONE=1'
