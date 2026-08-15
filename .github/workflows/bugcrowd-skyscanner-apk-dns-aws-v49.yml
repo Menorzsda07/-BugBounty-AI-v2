@@ -1,0 +1,138 @@
+name: Bugcrowd Skyscanner APK Referenced DNS AWS V49
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-apk-dns-aws-v49.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apk-referenced-dns:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Check a capped set of APK referenced Skyscanner DNS names
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'SCOPE_CHECK_DATE=2026-08-15'
+          echo 'DNS_ONLY=1'
+          echo 'HTTP_REQUESTS_TO_SKYSCANNER=0'
+          echo 'MAX_HOSTS=30'
+          mkdir -p "$PWD/out" "$PWD/unpacked"
+
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable \
+            -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          test -n "$FILE"
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          test -f "$APK"
+          echo "APK_SHA256=$(sha256sum "$APK" | cut -d' ' -f1)"
+
+          if ! command -v dig >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq dnsutils
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess, time, zipfile
+
+          apk = Path("unpacked/net.skyscanner.android.main.apk")
+          host_rx = re.compile(
+              rb"(?i)(?<![a-z0-9-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+skyscanner\.net"
+          )
+          hosts = set()
+          with zipfile.ZipFile(apk) as zf:
+              for info in zf.infolist():
+                  if info.file_size > 120_000_000:
+                      continue
+                  try:
+                      data = zf.read(info)
+                  except Exception:
+                      continue
+                  for value in host_rx.findall(data):
+                      try:
+                          host = value.decode("ascii").lower().rstrip(".")
+                      except UnicodeDecodeError:
+                          continue
+                      if len(host) <= 253:
+                          hosts.add(host)
+
+          hosts.update({
+              "www.skyscanner.net",
+              "gateway.skyscanner.net",
+              "partnerportal.skyscanner.net",
+          })
+
+          priority_terms = (
+              "dev", "test", "stage", "staging", "sandbox", "preview",
+              "demo", "static", "asset", "cdn", "edge", "api", "gateway"
+          )
+          def rank(host):
+              score = sum(10 for term in priority_terms if term in host)
+              score += host.count(".")
+              return (-score, host)
+
+          ordered = sorted(hosts, key=rank)
+          selected = ordered[:30]
+          print(f"V49_DISCOVERED_HOSTS={len(hosts)}")
+          print(f"V49_SELECTED_HOSTS={len(selected)}")
+          for host in selected:
+              print(f"HOST_SELECTED={host}")
+
+          provider_suffixes = (
+              ".amazonaws.com", ".cloudfront.net", ".herokudns.com",
+              ".github.io", ".azurewebsites.net", ".trafficmanager.net",
+              ".fastly.net", ".fastlylb.net", ".vercel-dns.com",
+              ".netlify.app", ".pages.dev"
+          )
+
+          def dig(rrtype, name, comments=False):
+              args = ["dig", "+time=3", "+tries=1"]
+              if comments:
+                  args += ["+noall", "+comments"]
+              else:
+                  args += ["+short"]
+              args += [rrtype, name]
+              p = subprocess.run(args, text=True, capture_output=True, timeout=8)
+              return p.stdout.strip()
+
+          candidates = []
+          for index, host in enumerate(selected, 1):
+              cname_lines = [x.rstrip(".").lower() for x in dig("CNAME", host).splitlines() if x.strip()]
+              a_lines = [x for x in dig("A", host).splitlines() if x.strip()]
+              aaaa_lines = [x for x in dig("AAAA", host).splitlines() if x.strip()]
+              cname = cname_lines[-1] if cname_lines else ""
+              target_status = "NONE"
+              if cname:
+                  comments = dig("CNAME", cname, comments=True)
+                  m = re.search(r"status:\s*([A-Z]+)", comments)
+                  target_status = m.group(1) if m else "UNKNOWN"
+              provider = any(cname.endswith(suffix) for suffix in provider_suffixes)
+              verdict = "RESOLVES_OR_NO_DANGLING_SIGNAL"
+              if cname and target_status == "NXDOMAIN":
+                  verdict = "DANGLING_CNAME_CANDIDATE_REVIEW"
+                  candidates.append((host, cname, verdict))
+              elif cname and provider and not a_lines and not aaaa_lines:
+                  verdict = "PROVIDER_CNAME_WITHOUT_ADDRESS_REVIEW"
+                  candidates.append((host, cname, verdict))
+              elif not cname and not a_lines and not aaaa_lines:
+                  verdict = "SOURCE_NAME_NO_DNS_RECORD_NOT_A_TAKEOVER"
+
+              print(
+                  f"DNS index={index} host={host} cname={cname or '<none>'} "
+                  f"a_count={len(a_lines)} aaaa_count={len(aaaa_lines)} "
+                  f"target_status={target_status} provider_suffix={provider} verdict={verdict}"
+              )
+              time.sleep(0.25)
+
+          print(f"V49_CANDIDATE_COUNT={len(candidates)}")
+          for host, cname, verdict in candidates:
+              print(f"CANDIDATE host={host} cname={cname} verdict={verdict}")
+          print("V49_APK_REFERENCED_DNS_DONE=1")
+          PY
