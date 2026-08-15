@@ -1,0 +1,172 @@
+name: Bugcrowd Skyscanner Profile Payment Xrefs V41
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-profile-payment-xrefs-v41.yml'
+  workflow_dispatch:
+
+jobs:
+  profile-payment-xrefs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 24
+    steps:
+      - name: Trace app-owned consumers and endpoints for profile payment types
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'STATIC_ANALYSIS_ONLY=1'
+          echo 'LIVE_SKYSCANNER_REQUESTS=0'
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/jadx" "$PWD/src"
+
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable             -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          test -f "$APK"
+          echo "APK_SHA256=$(sha256sum "$APK" | cut -d' ' -f1)"
+
+          curl -fsSL --retry 2 --max-time 60 -o /tmp/jadx.zip             'https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip'
+          unzip -q /tmp/jadx.zip -d jadx
+          chmod +x jadx/bin/jadx
+          set +e
+          jadx/bin/jadx --no-res --threads-count 2 -d src "$APK" >/tmp/jadx.log 2>&1
+          rc=$?
+          set -e
+          echo "JADX_RC=$rc"
+          tail -n 25 /tmp/jadx.log || true
+
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          root = Path("src/sources")
+          paths = list(root.rglob("*.java")) if root.exists() else []
+
+          print("=== APP-OWNED PAYMENT/PROFILE CLASS NAMES ===")
+          name_rx = re.compile(r"(profile|payment|card|wallet|billing)", re.I)
+          inventory = []
+          for path in paths:
+              rel = path.relative_to(root).as_posix()
+              if (rel.startswith("net/skyscanner/") or rel.startswith("com/skyscanner/")) and name_rx.search(rel):
+                  inventory.append(rel)
+          print("V41_CLASS_NAME_COUNT=", len(inventory))
+          for rel in sorted(inventory)[:600]:
+              print("CLASS_FILE=", rel)
+
+          xref_needles = [
+              "SaveRetrievePaymentMethods",
+              "PaymentMethodRequests",
+              "CardsScreenOpened",
+              "CardEditingContext",
+              "ProfileSettings",
+              "paymentToken",
+              "payment_token",
+              "cardToken",
+              "card_token",
+              "storedCard",
+              "stored_card",
+              "savedCard",
+              "saved_card",
+              "editingSessionId",
+              "editing_session_id",
+          ]
+          route_rx = re.compile(
+              r"(https?://[^\s\x22\x27]+|/[A-Za-z0-9_.~!$&()*+,;=:@%/?-]*"
+              r"(?:profile|payment|card|wallet|billing)"
+              r"[A-Za-z0-9_.~!$&()*+,;=:@%/?-]*)",
+              re.I,
+          )
+          annotation_rx = re.compile(r"@(GET|POST|PUT|PATCH|DELETE)\s*\(", re.I)
+          files = []
+
+          for path in paths:
+              rel = path.relative_to(root).as_posix()
+              if not (rel.startswith("net/skyscanner/") or rel.startswith("com/skyscanner/") or rel.startswith("p000/")):
+                  continue
+              if rel == "net/skyscanner/schemas/SaveRetrievePaymentMethods.java":
+                  continue
+              try:
+                  text = path.read_text(errors="replace")
+              except Exception:
+                  continue
+              hits = [n for n in xref_needles if n.lower() in text.lower()]
+              routes = route_rx.findall(text)
+              annotations = annotation_rx.findall(text)
+              if hits or routes or annotations and name_rx.search(rel):
+                  score = len(hits) * 8 + len(routes) * 4 + len(annotations) * 2
+                  files.append((score, rel, hits, routes, text))
+
+          files.sort(key=lambda x: (-x[0], x[1]))
+          print("V41_XREF_FILES=", len(files))
+          print("V41_TOP_XREFS=", [(score, rel, hits, len(routes)) for score, rel, hits, routes, _ in files[:120]])
+
+          secretish = re.compile(r'([\x22\x27])[A-Za-z0-9._~+/=-]{48,}\1')
+          query = re.compile(r'(https?://[^\s\x22\x27?]+)\?[^\s\x22\x27]+')
+          context_rx = re.compile(
+              r"(SaveRetrievePaymentMethods|PaymentMethodRequests|CardsScreenOpened|"
+              r"CardEditingContext|ProfileSettings|payment[_A-Za-z]*token|"
+              r"card[_A-Za-z]*token|stored[_A-Za-z]*card|saved[_A-Za-z]*card|"
+              r"editing[_A-Za-z]*session|https?://|@(GET|POST|PUT|PATCH|DELETE)|"
+              r"/[^\s\x22\x27]*(profile|payment|card|wallet|billing)[^\s\x22\x27]*)",
+              re.I,
+          )
+
+          emitted = 0
+          for score, rel, hits, routes, text in files[:120]:
+              lines = text.splitlines()
+              indexes = [i for i, line in enumerate(lines) if context_rx.search(line)]
+              if not indexes:
+                  continue
+              print(f"FILE={rel} SCORE={score} HITS={hits} CONTEXT_LINES={len(indexes)}")
+              shown = set()
+              per_file = 0
+              for i in indexes:
+                  for j in range(max(0, i-2), min(len(lines), i+3)):
+                      if j in shown:
+                          continue
+                      shown.add(j)
+                      line = secretish.sub(r'\1<long-literal-redacted>\1', lines[j])
+                      line = query.sub(r'\1?<query-redacted>', line)
+                      print(f"{j+1}: {line[:700]}")
+                      emitted += 1
+                      per_file += 1
+                      if per_file >= 30 or emitted >= 1200:
+                          break
+                  if per_file >= 30 or emitted >= 1200:
+                      break
+              if emitted >= 1200:
+                  break
+
+          schema_targets = [
+              root / "net/skyscanner/schemas/ProfileSettings.java",
+              root / "net/skyscanner/schemas/HotelsFrontend.java",
+              root / "net/skyscanner/schemas/SaveRetrievePaymentMethods.java",
+          ]
+          field_rx = re.compile(
+              r"(FieldAccessorTable|FIELD_NUMBER|PaymentMethod|payment[_A-Za-z]*token|"
+              r"CardEditingOperationType|CardEditingScreenHost|CardDetailsField|"
+              r"enum |class )",
+              re.I,
+          )
+          print("=== TARGET SCHEMA SUMMARIES ===")
+          summary_lines = 0
+          for path in schema_targets:
+              if not path.exists():
+                  continue
+              rel = path.relative_to(root).as_posix()
+              print("SCHEMA_FILE=", rel)
+              for i, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+                  if field_rx.search(line):
+                      safe = secretish.sub(r'\1<long-literal-redacted>\1', line)
+                      print(f"{i}: {safe[:700]}")
+                      summary_lines += 1
+                      if summary_lines >= 500:
+                          break
+              if summary_lines >= 500:
+                  break
+
+          print("V41_EMITTED_CONTEXT_LINES=", emitted)
+          print("V41_SCHEMA_SUMMARY_LINES=", summary_lines)
+          print("V41_PROFILE_PAYMENT_XREFS_DONE=1")
+          PY
