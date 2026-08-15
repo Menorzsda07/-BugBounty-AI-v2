@@ -1,0 +1,40 @@
+name: Bugcrowd Skyscanner Unsubscribe Capability V29
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-unsubscribe-capability-v29.yml'
+  workflow_dispatch:
+
+jobs:
+  unsubscribe-capability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check capability-token enforcement with nonexistent UUIDs only
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-Unsubscribe-Capability/1.0'
+          URL='https://mobile.ds.skyscanner.net/g/saved-experience-api/v2/flight_itinerary/unsubscribe_price_alert'
+          UUID1='00000000-0000-4000-8000-000000000001'
+          UUID2='00000000-0000-4000-8000-000000000002'
+          BAD_TOKEN='bugcrowd-invalid-token-00000000'
+
+          req() {
+            name="$1"; body="$2"
+            echo "=== $name ==="
+            curl -sS --max-time 20 -X POST \
+              -H "$HDR" -H "User-Agent: $UA" -H 'Accept: application/json' -H 'Content-Type: application/json' \
+              --data "$body" -D "/tmp/$name.h" -o "/tmp/$name.b" "$URL" || true
+            grep -Ei '^(HTTP/|content-type:|www-authenticate:|x-service|x-gateway)' "/tmp/$name.h" | head -n 50 || true
+            echo "BODY_BYTES=$(wc -c < /tmp/$name.b 2>/dev/null || echo 0)"
+            head -c 3500 "/tmp/$name.b" 2>/dev/null || true
+            echo
+          }
+
+          req valid_uuid_bad_token "{\"token\":\"$BAD_TOKEN\",\"priceAlertId\":\"$UUID1\",\"principalService\":\"bugcrowd\"}"
+          req valid_uuid_no_token "{\"priceAlertId\":\"$UUID2\",\"principalService\":\"bugcrowd\"}"
+          req valid_uuid_empty_token "{\"token\":\"\",\"priceAlertId\":\"$UUID2\",\"principalService\":\"bugcrowd\"}"
+          echo 'V29_UNSUB_CAPABILITY_DONE=1'
