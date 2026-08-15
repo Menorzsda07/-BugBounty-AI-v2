@@ -1,0 +1,47 @@
+name: Bugcrowd Skyscanner Partner Portal Baseline V13
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-partnerportal-baseline-v13.yml'
+  workflow_dispatch:
+
+jobs:
+  partnerportal-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Minimal Partner Portal baseline with Bugcrowd header
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-PartnerPortal/1.0'
+
+          fetch_one() {
+            name="$1"; url="$2"
+            echo "=== $name ==="
+            curl -sS --max-time 20 \
+              -H "$HDR" -H "User-Agent: $UA" \
+              -D "/tmp/$name.h" -o "/tmp/$name.b" \
+              "$url" || true
+            sed -n '1,40p' "/tmp/$name.h" || true
+            echo "BODY_BYTES=$(wc -c < /tmp/$name.b 2>/dev/null || echo 0)"
+            head -c 20000 "/tmp/$name.b" 2>/dev/null > "/tmp/$name.sample" || true
+          }
+
+          fetch_one portal_root 'https://partnerportal.skyscanner.net/'
+          fetch_one portal_robots 'https://partnerportal.skyscanner.net/robots.txt'
+
+          echo '=== ROOT SAME-PARTY URLS / ROUTE HINTS ==='
+          grep -Eo 'https?://[^"<> ]+|src="[^"]+|href="[^"]+' /tmp/portal_root.b 2>/dev/null \
+            | grep -Ei 'skyscanner|oauth|auth|login|api|graphql|report|quote|redirect|team|settings|insight' \
+            | head -n 200 || true
+
+          echo '=== SECURITY/CONFIG STRINGS ==='
+          grep -Eoi '.{0,120}(oauth|oidc|authorize|client_id|redirect_uri|graphql|api/|report|missing quote|websiteId|brandId|subscription|team|role|mfa).{0,180}' \
+            /tmp/portal_root.b 2>/dev/null | head -n 220 || true
+
+          echo '=== ROBOTS ==='
+          cat /tmp/portal_robots.b 2>/dev/null | head -n 200 || true
+          echo 'V13_PARTNERPORTAL_BASELINE_DONE=1'
