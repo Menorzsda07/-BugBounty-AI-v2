@@ -1,0 +1,60 @@
+name: Bugcrowd Skyscanner Account API Baseline V21
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-account-api-baseline-v21.yml'
+  workflow_dispatch:
+
+jobs:
+  account-api-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Read-only unauthenticated authorization baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-Account-Baseline/1.0'
+
+          req() {
+            name="$1"; url="$2"
+            echo "=== $name ==="
+            curl -sS --max-time 20 \
+              -H "$HDR" -H "User-Agent: $UA" \
+              -H 'Accept: application/json' \
+              -D "/tmp/$name.h" -o "/tmp/$name.b" \
+              "$url" || true
+            grep -Ei '^(HTTP/|location:|content-type:|www-authenticate:|set-cookie:|access-control|x-service|x-gateway|server:)' "/tmp/$name.h" | head -n 60 || true
+            echo "BODY_BYTES=$(wc -c < /tmp/$name.b 2>/dev/null || echo 0)"
+            python3 - "$name" <<'PY'
+          import sys,os,json,re
+          n=sys.argv[1]; p=f'/tmp/{n}.b'
+          if not os.path.exists(p): raise SystemExit
+          raw=open(p,'rb').read(12000)
+          try:
+              obj=json.loads(raw)
+              # Print structure and small scalar values only; no bulk data dumping.
+              def shape(x,depth=0):
+                  if depth>3: return '<depth>'
+                  if isinstance(x,dict): return {k:shape(v,depth+1) for k,v in list(x.items())[:30]}
+                  if isinstance(x,list): return {'_type':'list','count':len(x),'sample_shape':shape(x[0],depth+1) if x else None}
+                  if isinstance(x,str): return x[:180]
+                  return x
+              print(json.dumps(shape(obj),indent=2)[:8000])
+          except Exception:
+              text=raw.decode('utf-8','replace')
+              print(text[:3000])
+          PY
+          }
+
+          req saved_base 'https://mobile.ds.skyscanner.net/g/saved-experience-api/'
+          req alerts_list 'https://mobile.ds.skyscanner.net/g/price-alerts/v1/alerts'
+          req identity_current 'https://mobile.ds.skyscanner.net/g/identity/users/v1/authenticated'
+          req apps_profile 'https://mobile.ds.skyscanner.net/g/apps-profile/'
+          req traveller_users 'https://mobile.ds.skyscanner.net/g/traveller-auth-service/users'
+          req gateway_identity 'https://gateway.skyscanner.net/identity'
+          req profile_export 'https://www.skyscanner.net/profile/user/export'
+
+          echo 'V21_ACCOUNT_API_BASELINE_DONE=1'
