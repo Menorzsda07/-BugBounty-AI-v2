@@ -1,0 +1,60 @@
+name: CBMPC EdDSA2P DKG Sanitizer V57
+on:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-eddsa2p-dkg-sanitizer-v57.yml'
+jobs:
+  dkg-sanitizer:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch probe and exact upstream
+        run: |
+          set -euo pipefail
+          git clone https://github.com/Menorzsda07/-BugBounty-AI-v2.git audit >/dev/null 2>&1
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+          echo "tested_commit=$(git rev-parse HEAD)"
+          cd ..
+          mkdir -p cb-mpc/poc-v57
+          cp audit/pocs/cbmpc_ecdsa2p_dkg_transport_mutation_v56.cpp cb-mpc/poc-v57/v57.cpp
+          cp audit/pocs/cbmpc_ecdsa2p_dkg_transport_mutation_v56_CMakeLists.txt cb-mpc/poc-v57/CMakeLists.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('cb-mpc/poc-v57/v57.cpp')
+          s=p.read_text().replace('<cbmpc/api/ecdsa_2p.h>','<cbmpc/api/eddsa_2p.h>').replace('coinbase::api::ecdsa_2p','coinbase::api::eddsa_2p').replace('curve_id::secp256k1','curve_id::ed25519').replace('V56_','V57_')
+          p.write_text(s)
+          c=Path('cb-mpc/poc-v57/CMakeLists.txt')
+          t=c.read_text().replace('cbmpc-ecdsa2p-dkg-v56','cbmpc-eddsa2p-dkg-v57').replace('cbmpc_ecdsa2p_dkg_transport_mutation_v56.cpp','v57.cpp').replace('v56','v57')
+          c.write_text(t)
+          PY
+          if grep -q 'include-internal\|cbmpc/internal' cb-mpc/poc-v57/v57.cpp; then exit 1; fi
+          echo V57_PUBLIC_ONLY_SOURCE_CHECK=1
+      - name: Build image
+        run: cd cb-mpc && make image >/tmp/v57-image.log 2>&1
+      - name: Build sanitized public library and run DKG probe
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          set +e
+          timeout 45m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc '
+            set -euo pipefail
+            cd /code
+            SAN="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize=enum"
+            cmake -B build/Debug -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF -DCMAKE_C_FLAGS="$SAN" -DCMAKE_CXX_FLAGS="$SAN" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+            cmake --build build/Debug -- -j2
+            scripts/install.sh --mode public --build-type Debug --prefix /code/build/install/v57
+            test ! -d /code/build/install/v57/include/cbmpc/internal
+            cmake -S /code/poc-v57 -B /code/build/poc-v57 -DCMAKE_BUILD_TYPE=Debug -DCBMPC_REPO_ROOT=/code -DCBMPC_SOURCE_DIR=/code/build/install/v57
+            cmake --build /code/build/poc-v57 -- -j2
+            ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:abort_on_error=1" UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1" /code/build/poc-v57/cbmpc-eddsa2p-dkg-v57 | tee /code/v57-verdict.txt
+          ' > /tmp/v57.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/v57.log
+          if grep -Eq 'ERROR: AddressSanitizer|runtime error:|UndefinedBehaviorSanitizer|heap-use-after-free|heap-buffer-overflow|stack-buffer-overflow|global-buffer-overflow' /tmp/v57.log; then echo V57_MEMORY_SAFETY_CANDIDATE=1; exit 3; fi
+          if grep -q 'V57_DKG_INTEGRITY_CANDIDATE=1' /tmp/v57.log; then echo V57_KEY_INTEGRITY_CANDIDATE=1; exit 4; fi
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          grep -q 'V57_DKG_INTEGRITY_CANDIDATE=0' /tmp/v57.log
+          echo V57_CANDIDATE=0
