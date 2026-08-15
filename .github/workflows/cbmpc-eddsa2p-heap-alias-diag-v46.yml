@@ -1,0 +1,90 @@
+name: CBMPC EdDSA2P Heap Alias Diagnostic V46
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-eddsa2p-heap-alias-diag-v46.yml'
+      - 'pocs/cbmpc_eddsa2p_heap_alias_diag_v46.cpp'
+      - 'pocs/cbmpc_eddsa2p_heap_alias_diag_v46_CMakeLists.txt'
+
+permissions:
+  contents: read
+
+jobs:
+  heap-alias-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Fetch diagnostic and exact upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/Menorzsda07/-BugBounty-AI-v2.git audit >/dev/null 2>&1
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+          echo "tested_commit=$(git rev-parse HEAD)"
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/cbmpc/api/eddsa2pc.cpp')
+          s = p.read_text()
+          s = s.replace('#include <cbmpc/api/eddsa_2p.h>', '#include <cstdio>\n#include <cbmpc/api/eddsa_2p.h>', 1)
+          old = '''  const auto self = to_internal_party(job.self);
+          if (key.role != self) return coinbase::error(E_BADARG, "job.self mismatch key blob role");
+
+          coinbase::mpc::job_2p_t mpc_job = to_internal_job(job);
+          return coinbase::mpc::eddsa2pc::sign(mpc_job, key, msg, sig);
+          '''
+          new = '''  const auto self = to_internal_party(job.self);
+          if (key.role != self) return coinbase::error(E_BADARG, "job.self mismatch key blob role");
+
+          std::fprintf(stderr, "V46_POST_FREE role=%d size=%d hex=", static_cast<int>(job.self), msg.size);
+          for (int vi = 0; vi < msg.size; ++vi) std::fprintf(stderr, "%02x", static_cast<unsigned>(msg.data[vi]));
+          std::fprintf(stderr, "\\n");
+
+          coinbase::mpc::job_2p_t mpc_job = to_internal_job(job);
+          return coinbase::mpc::eddsa2pc::sign(mpc_job, key, msg, sig);
+          '''
+          if old not in s:
+              raise SystemExit('V46 patch anchor not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          cd ..
+          mkdir -p cb-mpc/poc-v46
+          cp audit/pocs/cbmpc_eddsa2p_heap_alias_diag_v46.cpp cb-mpc/poc-v46/
+          cp audit/pocs/cbmpc_eddsa2p_heap_alias_diag_v46_CMakeLists.txt cb-mpc/poc-v46/CMakeLists.txt
+          if grep -q 'include-internal\|cbmpc/internal' cb-mpc/poc-v46/cbmpc_eddsa2p_heap_alias_diag_v46.cpp; then
+            echo 'V46_PUBLIC_POC_SOURCE_CHECK=0'; exit 1
+          fi
+          echo 'V46_PUBLIC_POC_SOURCE_CHECK=1'
+
+      - name: Build image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/v46-image.log 2>&1
+
+      - name: Build diagnostic library and execute
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          timeout 45m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc '
+            set -euo pipefail
+            cd /code
+            make install BUILD_TYPE=Release >/tmp/v46-build.log 2>&1
+            test -d /code/build/install/public/include/cbmpc/api
+            test ! -d /code/build/install/public/include/cbmpc/internal
+            cmake -S /code/poc-v46 -B /code/build/poc-v46 \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCBMPC_REPO_ROOT=/code \
+              -DCBMPC_SOURCE_DIR=/code/build/install/public
+            cmake --build /code/build/poc-v46 -- -j2
+            /code/build/poc-v46/cbmpc-eddsa2p-heap-diag-v46 2>&1 | tee /code/v46-verdict.txt
+          '
+          cat v46-verdict.txt
+          grep -q 'V46_DIAGNOSTIC_DONE=1' v46-verdict.txt
+          echo 'V46_RUN_COMPLETED=1'
