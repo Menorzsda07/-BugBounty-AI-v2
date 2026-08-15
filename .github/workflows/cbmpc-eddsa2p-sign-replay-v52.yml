@@ -1,0 +1,73 @@
+name: CBMPC EdDSA2P Sign Replay V52
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-eddsa2p-sign-replay-v52.yml'
+      - 'pocs/cbmpc_eddsa2p_sign_replay_v52.cpp'
+      - 'pocs/cbmpc_eddsa2p_sign_replay_v52_CMakeLists.txt'
+
+permissions:
+  contents: read
+
+jobs:
+  cross-session-replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Fetch PoC and exact upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/Menorzsda07/-BugBounty-AI-v2.git audit >/dev/null 2>&1
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+          echo "tested_commit=$(git rev-parse HEAD)"
+          cd ..
+          mkdir -p cb-mpc/poc-v52
+          cp audit/pocs/cbmpc_eddsa2p_sign_replay_v52.cpp cb-mpc/poc-v52/
+          cp audit/pocs/cbmpc_eddsa2p_sign_replay_v52_CMakeLists.txt cb-mpc/poc-v52/CMakeLists.txt
+          if grep -q 'include-internal\|cbmpc/internal' cb-mpc/poc-v52/cbmpc_eddsa2p_sign_replay_v52.cpp; then
+            echo 'V52_PUBLIC_ONLY_SOURCE_CHECK=0'; exit 1
+          fi
+          echo 'V52_PUBLIC_ONLY_SOURCE_CHECK=1'
+
+      - name: Build image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/v52-image.log 2>&1
+
+      - name: Build public SDK and run replay probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          set +e
+          timeout 45m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc '
+            set -euo pipefail
+            cd /code
+            make install BUILD_TYPE=Release >/tmp/v52-build.log 2>&1
+            test -d /code/build/install/public/include/cbmpc/api
+            test ! -d /code/build/install/public/include/cbmpc/internal
+            cmake -S /code/poc-v52 -B /code/build/poc-v52 \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCBMPC_REPO_ROOT=/code \
+              -DCBMPC_SOURCE_DIR=/code/build/install/public
+            cmake --build /code/build/poc-v52 -- -j2
+            /code/build/poc-v52/cbmpc-eddsa2p-replay-v52 | tee /code/v52-verdict.txt
+          ' > /tmp/v52.log 2>&1
+          status=$?
+          set -e
+          echo "V52_PROCESS_EXIT=$status"
+          cat /tmp/v52.log
+          if grep -q 'V52_CROSS_SESSION_REPLAY_CANDIDATE=1' /tmp/v52.log; then
+            echo 'V52_REPLAY_BYPASS_CONFIRMED=1'; exit 3
+          fi
+          if [ "$status" -ne 0 ]; then echo 'V52_HARNESS_FAILURE=1'; exit "$status"; fi
+          grep -q 'V52_CROSS_SESSION_REPLAY_CANDIDATE=0' /tmp/v52.log
+          echo 'V52_REPLAY_BYPASS_CONFIRMED=0'
