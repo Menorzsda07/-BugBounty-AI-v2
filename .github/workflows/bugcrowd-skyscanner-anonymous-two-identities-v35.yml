@@ -1,0 +1,114 @@
+name: Bugcrowd Skyscanner Anonymous Two Identities V35
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-anonymous-two-identities-v35.yml'
+  workflow_dispatch:
+
+jobs:
+  two-identities:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Create two isolated anonymous identities and test own protected reads
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-OwnAnonymousIdentities/1.0'
+          AUTH='https://www.skyscanner.net/g/anonymous-auth-service/token'
+          CLIENT_ID='cfca180a6f79ab4de342'
+          REDIRECT='skyscanner://oauth2redirect'
+
+          make_identity() {
+            tag="$1"
+            utid=$(python3 - <<'PY'
+          import uuid
+          print(uuid.uuid4())
+          PY
+          )
+            curl -sS --max-time 25 -X POST \
+              -H "$HDR" -H "User-Agent: $UA" \
+              -H 'Accept: application/json' \
+              -H 'Content-Type: application/x-www-form-urlencoded; charset=UTF-8' \
+              --data-urlencode "client_id=$CLIENT_ID" \
+              --data-urlencode 'scope=' \
+              --data-urlencode "redirect_uri=$REDIRECT" \
+              --data-urlencode "previous_utid=$utid" \
+              --data-urlencode 'grant_type=anonymous' \
+              -D "/tmp/$tag.auth.h" -o "/tmp/$tag.auth.json" "$AUTH" || true
+            echo "=== AUTH $tag ==="
+            grep -Ei '^(HTTP/|content-type:|x-service|x-gateway|set-cookie:|www-authenticate:)' "/tmp/$tag.auth.h" | sed -E 's/(set-cookie:[^=]+=)[^;]+/\1<redacted>/I' | head -n 50 || true
+            python3 - "$tag" <<'PY'
+          import sys,json,base64,os
+          t=sys.argv[1]
+          p=f'/tmp/{t}.auth.json'
+          try: x=json.load(open(p))
+          except Exception:
+              print(open(p,'r',errors='replace').read()[:1500] if os.path.exists(p) else 'NO_BODY'); raise SystemExit
+          print('RESPONSE_KEYS=',sorted(x.keys()))
+          for k in ('token_type','expires_in','scope'):
+              if k in x: print(k,'=',x[k])
+          tok=x.get('access_token') or x.get('token')
+          ref=x.get('refresh_token')
+          print('HAS_ACCESS_TOKEN=',bool(tok),'ACCESS_TOKEN_LEN=',len(tok or ''))
+          print('HAS_REFRESH_TOKEN=',bool(ref),'REFRESH_TOKEN_LEN=',len(ref or ''))
+          if tok and tok.count('.')>=2:
+              try:
+                  part=tok.split('.')[1]; part += '='*(-len(part)%4)
+                  claims=json.loads(base64.urlsafe_b64decode(part))
+                  safe={k:v for k,v in claims.items() if k in ('iss','aud','azp','exp','iat','scope','sub') or 'utid' in k.lower() or 'account' in k.lower()}
+                  print('ACCESS_TOKEN_SAFE_CLAIMS=',json.dumps(safe,sort_keys=True))
+              except Exception as e: print('CLAIM_PARSE_ERROR=',type(e).__name__)
+          PY
+          }
+
+          make_identity A
+          make_identity B
+
+          python3 - <<'PY'
+          import json
+          for tag in ('A','B'):
+              x=json.load(open(f'/tmp/{tag}.auth.json'))
+              tok=x.get('access_token') or x.get('token')
+              if not tok: raise SystemExit(f'{tag}: no access token')
+              open(f'/tmp/{tag}.token','w').write(tok)
+          PY
+
+          protected_get() {
+            tag="$1"; name="$2"; url="$3"
+            tok=$(cat "/tmp/$tag.token")
+            curl -sS --max-time 20 \
+              -H "$HDR" -H "User-Agent: $UA" -H 'Accept: application/json' \
+              -H "Authorization: Bearer $tok" \
+              -D "/tmp/${tag}_${name}.h" -o "/tmp/${tag}_${name}.b" "$url" || true
+            echo "=== $tag :: $name ==="
+            grep -Ei '^(HTTP/|content-type:|x-service|x-gateway|www-authenticate:)' "/tmp/${tag}_${name}.h" | head -n 50 || true
+            echo "BODY_BYTES=$(wc -c < /tmp/${tag}_${name}.b 2>/dev/null || echo 0)"
+            python3 - "/tmp/${tag}_${name}.b" <<'PY'
+          import sys,json,os
+          p=sys.argv[1]; raw=open(p,'rb').read(18000) if os.path.exists(p) else b''
+          try:
+              x=json.loads(raw)
+              def sh(v,d=0):
+                  if d>4:return '<depth>'
+                  if isinstance(v,dict):return {k:sh(z,d+1) for k,z in list(v.items())[:40] if k.lower() not in ('token','access_token','refresh_token')}
+                  if isinstance(v,list):return {'_count':len(v),'sample':sh(v[0],d+1) if v else None}
+                  if isinstance(v,str):return v[:180]
+                  return v
+              print(json.dumps(sh(x),indent=2)[:12000])
+          except Exception: print(raw.decode('utf-8','replace')[:2500])
+          PY
+          }
+
+          SAVED='https://mobile.ds.skyscanner.net/g/saved-experience-api/v2/items/list?market=US&locale=en-US&currency_code=USD&use_v2_cards=true'
+          ALERTS='https://mobile.ds.skyscanner.net/g/price-alerts/v1/alerts?locale=en-US'
+          IDENTITY='https://mobile.ds.skyscanner.net/g/identity/users/v1/authenticated'
+          for t in A B; do
+            protected_get "$t" saved_list "$SAVED"
+            protected_get "$t" price_alerts "$ALERTS"
+            protected_get "$t" identity_current "$IDENTITY"
+          done
+
+          echo 'V35_TWO_OWN_ANON_IDENTITIES_DONE=1'
