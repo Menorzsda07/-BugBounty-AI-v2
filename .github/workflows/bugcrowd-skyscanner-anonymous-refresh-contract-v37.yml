@@ -1,0 +1,172 @@
+name: Bugcrowd Skyscanner Anonymous Refresh Contract V37
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-anonymous-refresh-contract-v37.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refresh-contract-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Derive trusted-anonymous refresh contract from official APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'SCOPE_CHECK_DATE=2026-08-15'
+          echo 'STATIC_ANALYSIS_ONLY=1'
+          echo 'LIVE_SKYSCANNER_REQUESTS=0'
+
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/decompiled"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable             -a net.skyscanner.android.main /output
+
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          test -n "$FILE"
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          test -f "$APK"
+          echo "APK_SHA256=$(sha256sum "$APK" | cut -d' ' -f1)"
+
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import urllib.request
+
+          api = 'https://api.github.com/repos/skylot/jadx/releases/latest'
+          request = urllib.request.Request(api, headers={
+              'Accept': 'application/vnd.github+json',
+              'User-Agent': 'Bugcrowd-Skyscanner-Static-Research'
+          })
+          with urllib.request.urlopen(request, timeout=30) as response:
+              release = json.load(response)
+          assets = [
+              asset for asset in release.get('assets', [])
+              if asset.get('name', '').startswith('jadx-')
+              and asset.get('name', '').endswith('.zip')
+              and 'gui' not in asset.get('name', '').lower()
+          ]
+          if not assets:
+              raise SystemExit('No official JADX CLI zip asset found')
+          asset = sorted(assets, key=lambda item: item['name'])[-1]
+          print('JADX_RELEASE_TAG=', release.get('tag_name'))
+          print('JADX_ASSET_NAME=', asset['name'])
+          destination = pathlib.Path('/tmp/jadx.zip')
+          urllib.request.urlretrieve(asset['browser_download_url'], destination)
+          PY
+
+          unzip -q /tmp/jadx.zip -d /tmp/jadx
+          chmod +x /tmp/jadx/bin/jadx
+          /tmp/jadx/bin/jadx             --no-res             --no-debug-info             --show-bad-code             --deobf             --threads-count 2             -d decompiled "$APK" >/tmp/jadx.log 2>&1 || true
+
+          echo '=== JADX SUMMARY ==='
+          tail -n 40 /tmp/jadx.log || true
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('decompiled/sources')
+          terms = [
+              'refresh_token',
+              'grant_type',
+              'previous_utid',
+              'anonymous-auth-service/token',
+              'AnonymousAuthStateProvider',
+              'AnonymousIdentityTokens',
+              'AnonymousIdentitySharedPreferences',
+              'TrustedAnonymousGlobalRollout',
+              'identityTrustedanonymousglobalrollout',
+              'Secure-anon_token',
+              'client_id',
+              'redirect_uri',
+          ]
+          records = []
+          for path in root.rglob('*.java'):
+              try:
+                  text = path.read_text(errors='replace')
+              except OSError:
+                  continue
+              lower = text.lower()
+              hits = [term for term in terms if term.lower() in lower]
+              if hits:
+                  records.append((len(hits), path, text, hits))
+
+          records.sort(key=lambda item: (-item[0], str(item[1])))
+          print('MATCHED_SOURCE_FILES=', len(records))
+          print('=== RANKED RELEVANT FILES ===')
+          for score, path, _text, hits in records[:100]:
+              print(f'SCORE={score} FILE={path} TERMS={",".join(hits)}')
+
+          selected = []
+          for record in records:
+              score, path, text, hits = record
+              low_hits = {item.lower() for item in hits}
+              refresh_related = (
+                  'refresh_token' in low_hits
+                  or ('grant_type' in low_hits and (
+                      'anonymousidentitytokens' in low_hits
+                      or 'anonymousauthstateprovider' in low_hits
+                      or 'anonymous-auth-service/token' in low_hits
+                  ))
+              )
+              trusted_related = (
+                  'trustedanonymousglobalrollout' in low_hits
+                  or 'identitytrustedanonymousglobalrollout' in low_hits
+                  or 'secure-anon_token' in low_hits
+              )
+              if refresh_related or trusted_related:
+                  selected.append(record)
+
+          print('SELECTED_SOURCE_FILES=', len(selected))
+          long_literal = re.compile(r'(?<![A-Za-z0-9])[A-Za-z0-9_./+=:-]{72,}(?![A-Za-z0-9])')
+          printed = 0
+          for score, path, text, hits in selected[:40]:
+              lines = text.splitlines()
+              indexes = [
+                  index for index, line in enumerate(lines)
+                  if any(term.lower() in line.lower() for term in hits)
+              ]
+              print(f'=== SOURCE_FILE {path} SCORE={score} ===')
+              seen = set()
+              for index in indexes[:24]:
+                  start, end = max(0, index - 8), min(len(lines), index + 9)
+                  key = (start, end)
+                  if key in seen:
+                      continue
+                  seen.add(key)
+                  print(f'--- LINES {start + 1}-{end} ---')
+                  for number in range(start, end):
+                      safe = long_literal.sub('<long-literal-redacted>', lines[number])
+                      print(f'{number + 1}: {safe[:500]}')
+                  printed += 1
+                  if printed >= 160:
+                      break
+              if printed >= 160:
+                  break
+
+          joined = '\n'.join(text for _score, _path, text, _hits in records)
+          checks = {
+              'HAS_REFRESH_TOKEN_FIELD': 'refresh_token' in joined.lower(),
+              'HAS_GRANT_TYPE_FIELD': 'grant_type' in joined.lower(),
+              'HAS_PREVIOUS_UTID_FIELD': 'previous_utid' in joined.lower(),
+              'HAS_TRUSTED_ANON_ROLLOUT': (
+                  'trustedanonymousglobalrollout' in joined.lower()
+                  or 'identitytrustedanonymousglobalrollout' in joined.lower()
+              ),
+              'HAS_SECURE_ANON_TOKEN': 'secure-anon_token' in joined.lower(),
+          }
+          for key, value in checks.items():
+              print(f'{key}={int(value)}')
+          print('SNIPPET_WINDOWS_PRINTED=', printed)
+          if not checks['HAS_REFRESH_TOKEN_FIELD'] or not checks['HAS_GRANT_TYPE_FIELD']:
+              print('REFRESH_CONTRACT_READY=0')
+          else:
+              print('REFRESH_CONTRACT_READY=1')
+          PY
+
+          echo 'V37_TRUSTED_ANON_REFRESH_STATIC_DONE=1'
