@@ -2,6 +2,20 @@
 
 Plataforma conversacional para organizar investigações de bug bounty **somente em ativos autorizados**. O domínio é informado diretamente no chat; o sistema valida o escopo, monta um plano amplo, acompanha a execução e apresenta achados detalhados com evidências.
 
+## Continuidade para ChatGPT/Codex
+
+Se você conectou uma nova sessão/conta do ChatGPT ou Codex a este repositório para continuar as pesquisas de bug bounty, **não comece do zero**.
+
+Leia primeiro:
+
+1. [`AGENTS.md`](AGENTS.md) — regras de retomada e atualização.
+2. [`CHATGPT_BUG_BOUNTY_CONTINUITY.md`](CHATGPT_BUG_BOUNTY_CONTINUITY.md) — índice canônico do estado atual.
+3. [`docs/continuity/HACKERONE.md`](docs/continuity/HACKERONE.md) — workstreams HackerOne.
+4. [`docs/continuity/BUGCROWD.md`](docs/continuity/BUGCROWD.md) — workstreams Bugcrowd.
+5. [`docs/continuity/state.json`](docs/continuity/state.json) — estado estruturado para agentes.
+
+Esses arquivos registram o que já foi testado, resultados negativos, bugs confirmados/report-ready, evidências, runs/commits, limitações, bounty snapshots e o próximo ponto seguro de retomada. HackerOne e Bugcrowd devem permanecer separados.
+
 ## O que está implementado
 
 - Interface responsiva estilo ChatGPT, adequada para iPhone.
