@@ -1,0 +1,72 @@
+name: Bugcrowd YNAB sourcemap trace
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-ynab-sourcemap-trace.yml'
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch explicitly referenced same-host source maps and trace source-to-sink patterns
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess,re,json,urllib.parse,os
+          base='https://staging-app.bany.dev'
+          js=[
+          '/assets/packs/js/418-6d029bc76026b00b6703.js',
+          '/assets/packs/js/504-2ff8a3de1ba006ca876a.js',
+          '/assets/packs/js/519-bede6b13438d1b131f28.js',
+          '/assets/packs/js/692-9c1dfda28a67a79373df.js',
+          '/assets/packs/js/831-77e04493434326eef099.js',
+          '/assets/packs/js/956-58d5003c1127c1a73975.js',
+          '/assets/packs/js/960-b2c1100206f0e2e0044a.js',
+          '/assets/packs/js/application-d19d79fbeb936b83dc8a.js']
+          def fetch(u):
+            p=subprocess.run(['curl','-ksS','--max-time','15','--max-redirs','0','-A','BugBounty-AI scoped-security-research','-o','/tmp/b','-w','%{http_code} %{size_download} %{content_type}',u],text=True,capture_output=True)
+            b=open('/tmp/b','rb').read() if os.path.exists('/tmp/b') else b''
+            return p.stdout.strip(),b
+          out=[]
+          source_rx=re.compile(r'(location\.(?:search|hash)|URLSearchParams|postMessage|addEventListener\s*\(\s*["\']message|document\.referrer|window\.name)',re.I)
+          sink_rx=re.compile(r'(innerHTML|outerHTML|insertAdjacentHTML|srcdoc|document\.write|\.html\s*\(|eval\s*\(|new\s+Function)',re.I)
+          sanit_rx=re.compile(r'(DOMPurify|sanitize|escapeHTML|textContent|createTextNode)',re.I)
+          for path in js:
+            ju=base+path
+            meta,b=fetch(ju); text=b.decode('utf-8','replace')
+            m=re.findall(r'(?i)sourceMappingURL\s*=\s*([^\s*]+)',text[-150000:])
+            for ref in m[:2]:
+              mu=urllib.parse.urljoin(ju,ref.strip().strip('"\''))
+              if urllib.parse.urlsplit(mu).hostname!='staging-app.bany.dev': continue
+              mm,mb=fetch(mu)
+              row={'map_url':mu,'meta':mm,'json':False,'sources':0,'interesting_sources':[]}
+              try:
+                data=json.loads(mb.decode('utf-8','replace')); row['json']=True
+                sources=data.get('sources') or []; contents=data.get('sourcesContent') or []
+                row['sources']=len(sources)
+                for i,name in enumerate(sources):
+                  c=contents[i] if i < len(contents) and isinstance(contents[i],str) else ''
+                  if not c: continue
+                  srcs=sorted(set(x.group(1) for x in source_rx.finditer(c)))
+                  sinks=sorted(set(x.group(1) for x in sink_rx.finditer(c)))
+                  if srcs and sinks:
+                    row['interesting_sources'].append({'source':name[:300],'sources':srcs,'sinks':sinks,'sanitizer_hint':bool(sanit_rx.search(c)),'snippet':re.sub(r'\s+',' ',c[:1200])})
+                row['interesting_sources']=row['interesting_sources'][:50]
+              except Exception as e:
+                row['parse_error']=type(e).__name__
+              out.append(row)
+          os.makedirs('out',exist_ok=True)
+          json.dump(out,open('out/ynab-sourcemap-trace.json','w'),indent=2)
+          for r in out:
+            if r.get('interesting_sources') or not r.get('json'):
+              print(json.dumps(r)[:6000])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ynab-sourcemap-trace
+          path: out/ynab-sourcemap-trace.json
+          retention-days: 2
