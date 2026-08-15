@@ -30,6 +30,7 @@ jobs:
           mkdir -p cb-mpc/poc-v45
           cp audit/pocs/cbmpc_ecdsa2p_transport_mutation_v45.cpp cb-mpc/poc-v45/
           cp audit/pocs/cbmpc_ecdsa2p_transport_mutation_v45_CMakeLists.txt cb-mpc/poc-v45/CMakeLists.txt
+          sed -i 's/self_==1&&receiver==0&&n_->mutate/self_==1\&\&receiver==0/' cb-mpc/poc-v45/cbmpc_ecdsa2p_transport_mutation_v45.cpp
           if grep -q 'include-internal\|cbmpc/internal' cb-mpc/poc-v45/cbmpc_ecdsa2p_transport_mutation_v45.cpp; then
             echo 'V45_PUBLIC_ONLY_SOURCE_CHECK=0'; exit 1
           fi
