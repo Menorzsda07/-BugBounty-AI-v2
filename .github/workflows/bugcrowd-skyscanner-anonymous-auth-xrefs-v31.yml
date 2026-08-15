@@ -1,0 +1,59 @@
+name: Bugcrowd Skyscanner Anonymous Auth Xrefs V31
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-anonymous-auth-xrefs-v31.yml'
+  workflow_dispatch:
+
+jobs:
+  anonymous-auth-xrefs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve anonymous-auth string cross-references in official APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+
+          python3 -m pip install --quiet 'androguard>=4.1,<5'
+          python3 - "$APK" <<'PY'
+          import sys,re
+          from androguard.misc import AnalyzeAPK
+          apk=sys.argv[1]
+          a, ds, dx = AnalyzeAPK(apk)
+          pats=[
+            re.compile(r'anonymous-auth-service',re.I),
+            re.compile(r'Identity_AnonymousClientID',re.I),
+            re.compile(r'Identity_AnonymousTokenGrantType',re.I),
+            re.compile(r'Anonymous Client ID',re.I),
+            re.compile(r'Anonymous Token Grant Type',re.I),
+            re.compile(r'grant_type',re.I),
+          ]
+          print('=== MATCHED STRINGS AND XREFS ===')
+          count=0
+          for s in dx.get_strings():
+              try: val=s.get_value()
+              except Exception: continue
+              if not any(p.search(str(val)) for p in pats): continue
+              count += 1
+              print('\nSTRING:',repr(val))
+              try:
+                  refs=list(s.get_xref_from())
+              except Exception as e:
+                  print('XREF_ERROR',repr(e)); refs=[]
+              for ref in refs[:80]:
+                  print('  XREF_RAW:',repr(ref))
+                  try:
+                      cls,meth=ref[0],ref[1]
+                      print('  CLASS:',getattr(cls,'name',cls))
+                      print('  METHOD:',meth)
+                  except Exception: pass
+          print('MATCH_COUNT=',count)
+          PY
+          echo 'V31_ANON_AUTH_XREFS_DONE=1'
