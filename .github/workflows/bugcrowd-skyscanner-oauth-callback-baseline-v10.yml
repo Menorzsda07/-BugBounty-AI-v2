@@ -1,0 +1,39 @@
+name: Bugcrowd Skyscanner OAuth Callback Baseline V10
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-oauth-callback-baseline-v10.yml'
+  workflow_dispatch:
+
+jobs:
+  oauth-callback-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Minimal OAuth callback behavior checks with Bugcrowd header
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-OAuth-Baseline/1.0'
+
+          req() {
+            name="$1"; url="$2"
+            echo "=== $name ==="
+            curl -sS --max-time 20 \
+              -H "$HDR" -H "User-Agent: $UA" \
+              -D "/tmp/$name.h" -o "/tmp/$name.b" \
+              "$url" || true
+            sed -n '1,35p' "/tmp/$name.h" || true
+            printf 'BODY_BYTES='; wc -c < "/tmp/$name.b" 2>/dev/null || echo 0
+            head -c 2500 "/tmp/$name.b" 2>/dev/null | tr '\000' '?' || true
+            echo
+          }
+
+          req www_empty 'https://www.skyscanner.net/oauth/redirect'
+          req mobile_empty 'https://mobile.ds.skyscanner.net/oauth/redirect'
+          req www_invalid 'https://www.skyscanner.net/oauth/redirect?code=bugcrowd-invalid&state=bugcrowd-invalid'
+          req mobile_invalid 'https://mobile.ds.skyscanner.net/oauth/redirect?code=bugcrowd-invalid&state=bugcrowd-invalid'
+
+          echo 'V10_OAUTH_CALLBACK_BASELINE_DONE=1'
