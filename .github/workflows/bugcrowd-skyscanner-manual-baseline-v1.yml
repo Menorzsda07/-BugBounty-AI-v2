@@ -1,0 +1,49 @@
+name: Bugcrowd Skyscanner Manual Baseline V1
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-manual-baseline-v1.yml'
+  workflow_dispatch:
+
+jobs:
+  manual-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Baseline with Bugcrowd identification header
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Manual-Baseline/1.0'
+
+          echo '=== BUGCROWD_PUBLIC_ENGAGEMENT ==='
+          curl -sS --max-time 20 \
+            -H "User-Agent: $UA" \
+            -D /tmp/bugcrowd.headers \
+            -o /tmp/bugcrowd.html \
+            'https://bugcrowd.com/engagements/skyscanner' || true
+          sed -n '1,30p' /tmp/bugcrowd.headers 2>/dev/null || true
+          echo "BUGCROWD_BODY_BYTES=$(wc -c < /tmp/bugcrowd.html 2>/dev/null || echo 0)"
+          grep -Eoi 'https?://[^"<> ]*skyscanner[^"<> ]*' /tmp/bugcrowd.html 2>/dev/null | head -n 30 || true
+
+          echo '=== SKYSCANNER_HOME_SINGLE_GET ==='
+          curl -sS --max-time 20 \
+            -H "$HDR" \
+            -H "User-Agent: $UA" \
+            -D /tmp/sky.headers \
+            -o /tmp/sky.html \
+            'https://www.skyscanner.net/' || true
+          sed -n '1,80p' /tmp/sky.headers 2>/dev/null || true
+          echo "SKY_BODY_BYTES=$(wc -c < /tmp/sky.html 2>/dev/null || echo 0)"
+          echo '--- candidate same-party URLs referenced by homepage ---'
+          grep -Eo 'https?://[^"<> ]+' /tmp/sky.html 2>/dev/null \
+            | sed 's/&amp;/\&/g' \
+            | grep -Ei 'skyscanner|skyscnr' \
+            | head -n 80 || true
+          echo '--- security-relevant strings ---'
+          grep -Eoi '.{0,80}(graphql|gateway|api/|oauth|authorize|token|save[^" <]{0,40}|list[^" <]{0,40}|account|login).{0,120}' /tmp/sky.html 2>/dev/null \
+            | head -n 100 || true
+
+          echo '=== V1_DONE ==='
