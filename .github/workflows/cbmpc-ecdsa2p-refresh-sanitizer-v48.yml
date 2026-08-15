@@ -1,0 +1,84 @@
+name: CBMPC ECDSA2P Refresh Sanitizer V48
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/cbmpc-ecdsa2p-refresh-sanitizer-v48.yml'
+      - 'pocs/cbmpc_ecdsa2p_refresh_mutation_v48.cpp'
+      - 'pocs/cbmpc_ecdsa2p_refresh_mutation_v48_CMakeLists.txt'
+
+permissions:
+  contents: read
+
+jobs:
+  refresh-invariant-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Fetch probe and exact upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/Menorzsda07/-BugBounty-AI-v2.git audit >/dev/null 2>&1
+          git clone https://github.com/coinbase/cb-mpc.git cb-mpc >/dev/null 2>&1
+          cd cb-mpc
+          git checkout fdbb60346757271d5e0241f417e55dc8f289573c >/dev/null 2>&1
+          git submodule update --init --recursive >/dev/null 2>&1
+          echo "tested_commit=$(git rev-parse HEAD)"
+          cd ..
+          mkdir -p cb-mpc/poc-v48
+          cp audit/pocs/cbmpc_ecdsa2p_refresh_mutation_v48.cpp cb-mpc/poc-v48/
+          cp audit/pocs/cbmpc_ecdsa2p_refresh_mutation_v48_CMakeLists.txt cb-mpc/poc-v48/CMakeLists.txt
+          if grep -q 'include-internal\|cbmpc/internal' cb-mpc/poc-v48/cbmpc_ecdsa2p_refresh_mutation_v48.cpp; then
+            echo 'V48_PUBLIC_ONLY_SOURCE_CHECK=0'; exit 1
+          fi
+          echo 'V48_PUBLIC_ONLY_SOURCE_CHECK=1'
+
+      - name: Build project image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          make image >/tmp/v48-image.log 2>&1
+
+      - name: Build sanitized public library and test refresh invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cb-mpc
+          set +e
+          timeout 45m docker run --rm -v "$PWD":/code -t cb-mpc bash -lc '
+            set -euo pipefail
+            cd /code
+            SAN="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize=enum"
+            cmake -B build/Debug -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF \
+              -DCMAKE_C_FLAGS="$SAN" -DCMAKE_CXX_FLAGS="$SAN" \
+              -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+              -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+            cmake --build build/Debug -- -j2
+            scripts/install.sh --mode public --build-type Debug --prefix /code/build/install/v48
+            test -d /code/build/install/v48/include/cbmpc/api
+            test ! -d /code/build/install/v48/include/cbmpc/internal
+            cmake -S /code/poc-v48 -B /code/build/poc-v48 \
+              -DCMAKE_BUILD_TYPE=Debug \
+              -DCBMPC_REPO_ROOT=/code \
+              -DCBMPC_SOURCE_DIR=/code/build/install/v48
+            cmake --build /code/build/poc-v48 -- -j2
+            ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:abort_on_error=1" \
+            UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1" \
+              /code/build/poc-v48/cbmpc-ecdsa2p-refresh-v48 | tee /code/v48-verdict.txt
+          ' > /tmp/v48.log 2>&1
+          status=$?
+          set -e
+          echo "V48_PROCESS_EXIT=$status"
+          cat /tmp/v48.log
+          if grep -Eq 'ERROR: AddressSanitizer|runtime error:|UndefinedBehaviorSanitizer|heap-use-after-free|heap-buffer-overflow|stack-buffer-overflow|global-buffer-overflow' /tmp/v48.log; then
+            echo 'V48_MEMORY_SAFETY_CANDIDATE=1'; exit 3
+          fi
+          if grep -q 'V48_REFRESH_KEY_INTEGRITY_CANDIDATE=1' /tmp/v48.log; then
+            echo 'V48_KEY_INTEGRITY_CANDIDATE=1'; exit 4
+          fi
+          if [ "$status" -ne 0 ]; then echo 'V48_NON_SANITIZER_FAILURE=1'; exit "$status"; fi
+          grep -q 'V48_REFRESH_KEY_INTEGRITY_CANDIDATE=0' /tmp/v48.log
+          echo 'V48_KEY_INTEGRITY_CANDIDATE=0'
