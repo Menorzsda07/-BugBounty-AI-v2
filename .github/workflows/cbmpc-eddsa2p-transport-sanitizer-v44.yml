@@ -66,6 +66,7 @@ jobs:
             test ! -d /code/build/install/v44/include/cbmpc/internal
             cmake -S /code/poc-v44 -B /code/build/poc-v44 \
               -DCMAKE_BUILD_TYPE=Debug \
+              -DCBMPC_REPO_ROOT=/code \
               -DCBMPC_SOURCE_DIR=/code/build/install/v44
             cmake --build /code/build/poc-v44 -- -j2
             ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:abort_on_error=1" \
