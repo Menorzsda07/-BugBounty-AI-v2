@@ -384,3 +384,92 @@ For every new Skyscanner test, append/update:
 - next non-duplicative step.
 
 If a finding is submitted, change its status to `CONFIRMED_SUBMITTED`; only use `ACCEPTED` after explicit Bugcrowd/Skyscanner confirmation.
+
+
+---
+
+## Update 2026-08-15 — Skyscanner v46–v51
+
+This section records only verified, sanitized outcomes. No vulnerability was confirmed in this batch.
+
+### v46–v47 — AI/Savvy Android mapping
+
+Status: NEGATIVE / static reconnaissance only. Finding bounty: USD 0.
+
+Evidence:
+
+- v46 workflow: .github/workflows/bugcrowd-skyscanner-ai-savvy-static-v46.yml
+- v46 commit/run/job: 1e32a68ea9b5db3f057d374db60c480da72148ec / 31910487804 / 95074679521
+- v47 workflow: .github/workflows/bugcrowd-skyscanner-ai-savvy-split-xrefs-v47.yml
+- v47 commit/run/job: 4e98b7588dfeddca963a410a1e0b6b0a118350c1 / 31910774137 / 95075363273
+
+Verified result:
+
+- the official package contained 20 APK/base-language-architecture splits;
+- the strong matches were telemetry/schema enum values SAVVY_SEARCH_TAPPED and AI_SEARCH;
+- no AI/Savvy network endpoint, Retrofit route or GraphQL operation was recovered;
+- no live Skyscanner request was made in either static workflow.
+
+Telemetry identifiers are not vulnerabilities and do not provide a safe active-test contract.
+
+### v48 — public Explore AI passive mapping
+
+Status: BLOCKED_BY_CAPTCHA / no security conclusion. Finding bounty: USD 0.
+
+Evidence:
+
+- workflow: .github/workflows/bugcrowd-skyscanner-explore-ai-passive-v48.yml
+- commit/run/job: c0fd36b7da6fdbcdc037e3ee4e7f5dab00360467 / 31910839195 / 95075512258
+
+Verified result:
+
+- exactly one request was made with the required Skyscanner-Security: Bugcrowd header;
+- /explore-ai returned 307 to Skyscanner's CAPTCHA route;
+- the workflow stopped there;
+- zero prompts and zero follow-up asset requests were sent.
+
+Do not bypass the CAPTCHA. Continue only through a normal researcher-controlled browser/app session.
+
+### v49 — capped APK-referenced DNS/AWS check
+
+Status: NEGATIVE. Finding bounty: USD 0.
+
+Evidence:
+
+- workflow: .github/workflows/bugcrowd-skyscanner-apk-dns-aws-v49.yml
+- commit/run/job: b4af3d66eaa72dba4c7cd0452d09143e014de9c4 / 31911000627 / 95075886281
+
+Verified result:
+
+- 12 APK-referenced or official Skyscanner hostnames were checked with DNS only;
+- active CNAME chains resolved normally;
+- names with no DNS record did not have a published dangling CNAME and are not takeover evidence;
+- candidate count: 0;
+- no HTTP request was sent to those hosts.
+
+### v50–v51 — passive Certificate Transparency follow-up
+
+Status: INCONCLUSIVE_EXTERNAL_DEPENDENCY. Finding bounty: USD 0.
+
+Evidence:
+
+- v50 workflow/commit/run/job: .github/workflows/bugcrowd-skyscanner-recent-ct-dns-v50.yml / 7b7b196b13812166ecd04e482d1db16d84467452 / 31911089160 / 95076111237
+- v51 workflow/commit/run: .github/workflows/bugcrowd-skyscanner-recent-ct-dns-v51.yml / 072db2ac07fd68892f6655241cf262320682f79f / 31911156697
+- v51 attempt jobs: 95076287339 and 95076404785
+
+Verified result:
+
+- v50 obtained CT data but its validity filter selected no names, so it is not a reliable negative conclusion;
+- v51 corrected selection, but the external CT service returned 502 and then 404;
+- the CT trail stopped after one rerun;
+- no Skyscanner target HTTP requests were made by v50/v51.
+
+### Current conclusion and manual dependency
+
+No reportable Skyscanner vulnerability has been established through v51.
+
+The next non-duplicative checks require a researcher-controlled interactive session:
+
+1. Open Savvy/AI Search in the official app using an English-speaking market and test only benign recommendation/safety cases permitted by the brief.
+2. Complete the isolated post-auth redirect observation only with the researcher's own Bugcrowd Ninja account and record only the final hostname.
+3. Do not share credentials, tokens, cookies or traveller information in chat or in this repository.
