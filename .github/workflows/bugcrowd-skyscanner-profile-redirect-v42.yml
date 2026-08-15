@@ -1,0 +1,88 @@
+name: Bugcrowd Skyscanner Profile Redirect V42
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-profile-redirect-v42.yml'
+  workflow_dispatch:
+
+jobs:
+  profile-redirect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check a fixed benign set of profile redirect parameters
+        shell: bash
+        run: |
+          set -euo pipefail
+          HDR='Skyscanner-Security: Bugcrowd'
+          UA='Mozilla/5.0 Bugcrowd-Research-Skyscanner-ProfileRedirect/1.0'
+          BASE='https://www.skyscanner.net/profile/'
+          MARKER='bbv42marker'
+
+          request_once() {
+            tag="$1"
+            url="$2"
+            code=$(curl -sS --max-time 25 --max-redirs 0               -H "$HDR" -H "User-Agent: $UA"               -H 'Accept: text/html,application/xhtml+xml'               -D "/tmp/$tag.h" -o "/tmp/$tag.b"               -w '%{http_code}' "$url" || true)
+            echo "V42_$tag"_HTTP="$code"
+            python3 - "$tag" "$MARKER" <<'PY'
+          import os, re, sys
+          from urllib.parse import urlparse
+
+          tag, marker = sys.argv[1:3]
+          hp = f"/tmp/{tag}.h"
+          bp = f"/tmp/{tag}.b"
+          headers = open(hp, "r", errors="replace").read() if os.path.exists(hp) else ""
+          body = open(bp, "rb").read(250000) if os.path.exists(bp) else b""
+
+          locations = re.findall(r"^location:\s*(.+?)\s*$", headers, re.I | re.M)
+          location = locations[-1] if locations else ""
+          parsed = urlparse(location)
+          host = (parsed.hostname or "").lower()
+          path = parsed.path or ""
+          is_example = host == "example.com" or host.endswith(".example.com")
+          is_skyscanner = host == "" or host == "skyscanner.net" or host.endswith(".skyscanner.net")
+          is_captcha = "/sttc/px/captcha" in path.lower()
+
+          print(f"V42_{tag}_BODY_BYTES={len(body)}")
+          print(f"V42_{tag}_HAS_LOCATION={bool(location)}")
+          print(f"V42_{tag}_LOCATION_SCHEME={parsed.scheme or '<relative>'}")
+          print(f"V42_{tag}_LOCATION_HOST={host or '<relative>'}")
+          print(f"V42_{tag}_LOCATION_PATH={path[:220] or '<none>'}")
+          print(f"V42_{tag}_LOCATION_IS_EXAMPLE={is_example}")
+          print(f"V42_{tag}_LOCATION_IS_SKYSCANNER={is_skyscanner}")
+          print(f"V42_{tag}_CAPTCHA_REDIRECT={is_captcha}")
+          print(f"V42_{tag}_MARKER_REFLECTED={marker.encode() in body.lower()}")
+          open(f"/tmp/{tag}.candidate", "w").write("1" if is_example else "0")
+          open(f"/tmp/{tag}.captcha", "w").write("1" if is_captcha else "0")
+          PY
+          }
+
+          request_once baseline "$BASE"
+          sleep 1
+          request_once returnurl "$BASE?returnUrl=https%3A%2F%2Fexample.com%2Fbbv42marker"
+          sleep 1
+          request_once redirecturi "$BASE?redirect_uri=https%3A%2F%2Fexample.com%2Fbbv42marker"
+          sleep 1
+          request_once next "$BASE?next=%2F%2Fexample.com%2Fbbv42marker"
+          sleep 1
+          request_once url "$BASE?url=https%3A%2F%2Fexample.com%2Fbbv42marker"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          tags = ["baseline", "returnurl", "redirecturi", "next", "url"]
+          candidates = sum(int(Path(f"/tmp/{tag}.candidate").read_text()) for tag in tags)
+          captchas = sum(int(Path(f"/tmp/{tag}.captcha").read_text()) for tag in tags)
+          print("V42_REQUEST_COUNT=", len(tags))
+          print("V42_EXTERNAL_EXAMPLE_REDIRECTS=", candidates)
+          print("V42_CAPTCHA_REDIRECTS=", captchas)
+          if candidates:
+              verdict = "CANDIDATE_OPEN_REDIRECT_REVIEW_REQUIRED"
+          elif captchas == len(tags):
+              verdict = "BLOCKED_BY_CAPTCHA_NO_REDIRECT_VALIDATION"
+          else:
+              verdict = "NEGATIVE_NO_EXTERNAL_REDIRECT"
+          print("V42_VERDICT=", verdict)
+          print("V42_PROFILE_REDIRECT_DONE=1")
+          PY
