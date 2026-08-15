@@ -1,0 +1,52 @@
+name: Bugcrowd Skyscanner Android Okta Callback V17
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-android-okta-callback-v17.yml'
+  workflow_dispatch:
+
+jobs:
+  okta-callback-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    steps:
+      - name: Inspect Okta callback transaction validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/jadx" "$PWD/classes"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable \
+            -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+
+          curl -fsSL --retry 2 --max-time 60 -o /tmp/jadx.zip \
+            'https://github.com/skylot/jadx/releases/download/v1.5.5/jadx-1.5.5.zip'
+          unzip -q /tmp/jadx.zip -d jadx
+          chmod +x jadx/bin/jadx
+
+          extract() {
+            cls="$1"; tag="$2"
+            echo "=== CLASS $cls ==="
+            set +e
+            jadx/bin/jadx --no-res --threads-count 2 --single-class "$cls" \
+              --single-class-output "classes/${tag}.java" "$APK" >"/tmp/${tag}.log" 2>&1
+            rc=$?
+            set -e
+            echo "RC=$rc"
+            tail -n 25 "/tmp/${tag}.log" || true
+            [ -f "classes/${tag}.java" ] && sed -n '1,900p' "classes/${tag}.java" || true
+          }
+
+          extract 'com.okta.webauthenticationui.ForegroundActivity' foreground
+
+          echo '=== FOREGROUND REFERENCES ==='
+          grep -RInE '(ForegroundActivity|redirect|state|nonce|code|pkce|verifier|transaction|session|SharedPreferences|getData|Uri|token|resume|flow|browser)' classes 2>/dev/null | head -n 1000 || true
+
+          echo '=== DISCOVER REFERENCED CLASSES ==='
+          if [ -f classes/foreground.java ]; then
+            grep -Eo '(defpackage\.[A-Za-z0-9_$]+|com\.okta\.[A-Za-z0-9_.$]+)' classes/foreground.java | sort -u | head -n 120 || true
+          fi
+          echo 'V17_OKTA_CALLBACK_DONE=1'
