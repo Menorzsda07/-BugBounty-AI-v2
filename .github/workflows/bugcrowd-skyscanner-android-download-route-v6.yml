@@ -1,0 +1,43 @@
+name: Bugcrowd Skyscanner Android Download Route V6
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-android-download-route-v6.yml'
+  workflow_dispatch:
+
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Decode Uptodown public download javascript
+        shell: bash
+        run: |
+          set -euo pipefail
+          PAGE='https://skyscanner.en.uptodown.com/android/download'
+          curl -sS --compressed -L --max-time 30 -H 'User-Agent: Mozilla/5.0' -o /tmp/page "$PAGE"
+          JS=$(grep -Eo 'https://stc\.utdstc\.com/[0-9]+/download\.js' /tmp/page | head -n1)
+          echo "JS=$JS"
+          curl -sS --compressed -L --max-time 30 -H 'User-Agent: Mozilla/5.0' -o /tmp/dl.js "$JS"
+          file /tmp/dl.js
+          echo "JS_BYTES=$(wc -c </tmp/dl.js)"
+          head -c 200 /tmp/dl.js | tr '\n' ' '; echo
+          python3 - <<'PY'
+          import re
+          s=open('/tmp/dl.js',encoding='utf-8',errors='replace').read()
+          terms=['fetch(','XMLHttpRequest','axios','ajax','download','file-id','fileId','version','turnstile','api/','variant','data-file-id','post(','get(']
+          for t in terms:
+            print('\n===',t,'===')
+            lo=s.lower(); tt=t.lower(); pos=0; n=0
+            while True:
+              i=lo.find(tt,pos)
+              if i<0 or n>=30: break
+              print(s[max(0,i-800):min(len(s),i+1500)].replace('\n',' '))
+              pos=i+len(tt); n+=1
+            print('COUNT',n)
+          urls=sorted(set(re.findall(r'https?://[^"\'` )]+',s,re.I)))
+          print('\nURLS',len(urls))
+          for x in urls[:100]: print(x[:1000])
+          print('V6_ROUTE_DONE=1')
+          PY
