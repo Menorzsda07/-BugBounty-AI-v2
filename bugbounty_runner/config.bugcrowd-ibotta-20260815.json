@@ -1,0 +1,62 @@
+{
+  "titan_profile": "V PRO 1.0 Bugcrowd Ibotta reviewed-scope",
+  "template_only": false,
+  "programs": [
+    {
+      "name": "bugcrowd-ibotta",
+      "targets": [
+        "https://content-server.ibotta.com/graphql",
+        "https://api.ibotta.com/",
+        "https://api.ibops.net/",
+        "https://api.int.ibops.net/",
+        "https://api.int.ibops.net/customer-loyalty-service",
+        "https://api.ibops.net/ad-management",
+        "https://backend.ibotta.com/",
+        "https://ibotta.com/"
+      ],
+      "exclude_paths": [],
+      "excluded_hosts": [],
+      "notes": "Only URL targets explicitly present in the current public Bugcrowd-derived Ibotta scope snapshot. Non-URL/mobile/extension targets are intentionally omitted from this HTTP runner. Never promote discovered third-party hosts into scope automatically."
+    }
+  ],
+  "max_requests_per_target_per_runner": 12,
+  "delay_ms": 1500,
+  "runner_count": 12,
+  "evidence_policy": {
+    "store_response_bodies": false,
+    "store_secret_values": false,
+    "store_auth_material": false,
+    "store_pii_values": false
+  },
+  "scope_policy": {
+    "discovered_urls_must_be_allowlisted": true,
+    "follow_redirects": false,
+    "third_party_fetches": false
+  },
+  "enabled_modules": [
+    "surface",
+    "headers",
+    "well_known",
+    "cookie_security",
+    "js_routes",
+    "api_hints",
+    "sourcemaps",
+    "auth_boundary",
+    "method_diff",
+    "cors",
+    "cache",
+    "openapi_graphql",
+    "dns_http_inventory",
+    "fingerprints",
+    "status_anomaly",
+    "content_type_diff",
+    "path_normalization_diff",
+    "encoding_diff",
+    "header_behavior_diff",
+    "method_consistency",
+    "response_shape_diff",
+    "cache_variance"
+  ],
+  "aggressive_modules": [],
+  "notes": "First active-safe pass. Escalate to injection, sensitive-file, redirect and malformed-input modules only after engagement-rule review confirms the techniques are allowed. No brute force, DoS, social engineering, real-user data access, or destructive side effects."
+}
