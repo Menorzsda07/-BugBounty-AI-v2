@@ -1,0 +1,56 @@
+name: Bugcrowd Skyscanner Target Info V3
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-target-info-v3.yml'
+  workflow_dispatch:
+
+jobs:
+  target-info:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Inspect public Bugcrowd target metadata endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          UA='Mozilla/5.0 Bugcrowd-Research-Target-Info/1.0'
+          curl -sS --max-time 20 -H "User-Agent: $UA" -o /tmp/bc.html 'https://bugcrowd.com/engagements/skyscanner'
+          python3 - <<'PY'
+          import html,re
+          s=html.unescape(open('/tmp/bc.html',encoding='utf-8',errors='replace').read())
+          print('=== ALL ENGAGEMENT PATHS ===')
+          paths=sorted(set(re.findall(r'/engagements/skyscanner[^"\\ <]*',s)))
+          for p in paths:
+              print(p[:500])
+          print('PATH_COUNT',len(paths))
+          for term in ['target_groups','targetGroups','targets','scope_ranks','Target Information','Focus Areas','in scope','out of scope']:
+              print(f'\n=== {term} ===')
+              low=s.lower(); t=term.lower(); pos=0; n=0
+              while True:
+                  i=low.find(t,pos)
+                  if i<0 or n>=20: break
+                  print(re.sub(r'\s+',' ',s[max(0,i-500):min(len(s),i+1200)]))
+                  pos=i+len(t); n+=1
+              print('COUNT',n)
+          PY
+
+          echo '=== PUBLIC ENDPOINT RESPONSES ==='
+          for path in \
+            '/engagements/skyscanner/scope_ranks' \
+            '/engagements/skyscanner/statistics' \
+            '/engagements/skyscanner/engagement_known_issues.json'; do
+            echo "--- $path ---"
+            curl -sS --max-time 20 -H "User-Agent: $UA" -H 'Accept: application/json' \
+              -D /tmp/h -o /tmp/b "https://bugcrowd.com$path" || true
+            head -n 12 /tmp/h || true
+            python3 - <<'PY'
+          import os
+          p='/tmp/b'
+          if os.path.exists(p):
+              data=open(p,'rb').read(12000)
+              print(data.decode('utf-8','replace'))
+          PY
+          done
+          echo 'V3_TARGET_INFO_DONE=1'
