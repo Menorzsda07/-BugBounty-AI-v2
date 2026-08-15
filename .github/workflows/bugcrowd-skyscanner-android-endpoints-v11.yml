@@ -1,0 +1,53 @@
+name: Bugcrowd Skyscanner Android Endpoints V11
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-android-endpoints-v11.yml'
+  workflow_dispatch:
+
+jobs:
+  endpoints:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Acquire verified current app and inventory embedded network surfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable -a net.skyscanner.android.main /output
+          unzip -q out/net.skyscanner.android.main.xapk -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n1)
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n1)
+          PKG=$("$AAPT" dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -n1)
+          VER=$("$AAPT" dump badging "$APK" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -n1)
+          CERT=$("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/^V3.0 Signer: certificate SHA-256 digest: //p' | head -n1)
+          test "$PKG" = 'net.skyscanner.android.main'
+          test "$VER" = '7.204'
+          test "$CERT" = 'd7940f8fc2a01fd9ae585538c293fe45eb0fe1ac538605788fe4f68ea580337a'
+
+          mkdir -p raw
+          unzip -q "$APK" -d raw
+          find raw -maxdepth 1 -name 'classes*.dex' -print0 | xargs -0 strings -a > /tmp/dex.strings
+          strings -a raw/resources.arsc >> /tmp/dex.strings || true
+
+          echo '=== SKYSCANNER OWNED URL STRINGS ==='
+          grep -Eo 'https?://[^[:space:]"<>]+' /tmp/dex.strings \
+            | grep -Ei '(^|[./])skyscanner\.(net|com|io)|skyscnr' \
+            | sed -E 's/[),;]+$//' | sort -u | head -n 1000 || true
+
+          echo '=== SKYSCANNER HOSTNAMES ==='
+          grep -Eo '([A-Za-z0-9_-]+\.)+(skyscanner\.(net|com|io)|skyscnr\.com)' /tmp/dex.strings \
+            | tr 'A-Z' 'a-z' | sort -u | head -n 600 || true
+
+          echo '=== API / GRAPHQL / AUTH / TRIPS / SAVED CONTEXT ==='
+          grep -n -i -E 'graphql|gateway|api/v[0-9]|oauth|authorize|token|refresh_token|access_token|save.?to.?list|saved|wishlist|trip|profile|passenger|travell?er|account|booking' /tmp/dex.strings \
+            | head -n 1600 || true
+
+          echo '=== HTTP HEADER / CLIENT IDENTIFIERS ==='
+          grep -n -i -E 'x-skyscanner|authorization|bearer|client-id|client_id|api-key|apikey|user-agent|session-id|correlation-id' /tmp/dex.strings \
+            | head -n 1000 || true
+
+          echo 'V11_ENDPOINT_INVENTORY_DONE=1'
