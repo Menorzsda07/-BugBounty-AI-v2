@@ -1,0 +1,74 @@
+name: Bugcrowd Skyscanner Android Static V7
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-android-static-v7.yml'
+  workflow_dispatch:
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Acquire one Skyscanner package from APKPure via EFF apkeep
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable \
+            -a net.skyscanner.android.main /output
+          echo '=== DOWNLOADED ==='
+          find out -maxdepth 2 -type f -printf '%p %s bytes\n'
+          sha256sum out/* || true
+
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          echo "FILE=$FILE"
+          file "$FILE"
+          if unzip -l "$FILE" >/dev/null 2>&1; then
+            unzip -q "$FILE" -d unpacked || true
+          fi
+          echo '=== PACKAGE CONTENTS ==='
+          find unpacked -maxdepth 2 -type f -printf '%p %s bytes\n' | head -n 100 || true
+
+          # Select an APK containing the application's manifest (prefer base/master, then largest APK).
+          APK=''
+          for p in "$FILE" unpacked/base.apk unpacked/*base*.apk unpacked/*master*.apk; do
+            [ -f "$p" ] || continue
+            if unzip -l "$p" 2>/dev/null | grep -q 'AndroidManifest.xml'; then APK="$p"; break; fi
+          done
+          if [ -z "$APK" ]; then
+            APK=$(find unpacked -type f -name '*.apk' -printf '%s %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)
+          fi
+          test -n "$APK" -a -f "$APK"
+          echo "BASE_APK=$APK"
+          sha256sum "$APK"
+
+          echo '=== ANDROID TOOLS ==='
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n1)
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n1)
+          echo "APKSIGNER=$APKSIGNER"
+          echo "AAPT=$AAPT"
+
+          echo '=== CERTIFICATE ==='
+          "$APKSIGNER" verify --print-certs "$APK" | sed -n '1,40p'
+
+          echo '=== BADGING ==='
+          "$AAPT" dump badging "$APK" | sed -n '1,140p'
+
+          PKG=$("$AAPT" dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -n1)
+          echo "PACKAGE_ID=$PKG"
+          test "$PKG" = 'net.skyscanner.android.main'
+
+          echo '=== MANIFEST XMLTREE SECURITY SURFACE ==='
+          "$AAPT" dump xmltree "$APK" AndroidManifest.xml > /tmp/manifest.txt
+          grep -E -n -B2 -A12 \
+            'E: (activity|activity-alias|service|receiver|provider|intent-filter)|A: android:(exported|permission|scheme|host|path|pathPrefix|pathPattern|autoVerify|debuggable|allowBackup|usesCleartextTraffic)' \
+            /tmp/manifest.txt | head -n 1200 || true
+
+          echo '=== STRING ENDPOINT/DEEPLINK HINTS ==='
+          unzip -p "$APK" resources.arsc 2>/dev/null | strings -a \
+            | grep -Eio '([a-z][a-z0-9+.-]{1,20}://[^[:space:]"<>]{1,250}|https?://[^[:space:]"<>]{1,250}|[A-Za-z0-9._-]*skyscanner[A-Za-z0-9._/-]*)' \
+            | sort -u | head -n 500 || true
+
+          echo 'V7_ANDROID_STATIC_DONE=1'
