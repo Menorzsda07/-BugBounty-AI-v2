@@ -1,0 +1,183 @@
+name: Bugcrowd Skyscanner Anonymous Refresh Callgraph V38
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-anonymous-refresh-callgraph-v38.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  anonymous-refresh-callgraph:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Trace anonymous refresh and trusted-rollout call graph in official APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'SCOPE_CHECK_DATE=2026-08-15'
+          echo 'STATIC_ANALYSIS_ONLY=1'
+          echo 'LIVE_SKYSCANNER_REQUESTS=0'
+
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/decompiled"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable             -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          test -n "$FILE"
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          test -f "$APK"
+          echo "APK_SHA256=$(sha256sum "$APK" | cut -d' ' -f1)"
+
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import urllib.request
+          request = urllib.request.Request(
+              'https://api.github.com/repos/skylot/jadx/releases/latest',
+              headers={
+                  'Accept': 'application/vnd.github+json',
+                  'User-Agent': 'Bugcrowd-Skyscanner-Static-Research'
+              }
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              release = json.load(response)
+          assets = [
+              asset for asset in release.get('assets', [])
+              if asset.get('name', '').startswith('jadx-')
+              and asset.get('name', '').endswith('.zip')
+              and 'gui' not in asset.get('name', '').lower()
+          ]
+          if not assets:
+              raise SystemExit('No official JADX CLI zip asset found')
+          asset = sorted(assets, key=lambda item: item['name'])[-1]
+          print('JADX_RELEASE_TAG=', release.get('tag_name'))
+          urllib.request.urlretrieve(
+              asset['browser_download_url'],
+              pathlib.Path('/tmp/jadx.zip')
+          )
+          PY
+
+          unzip -q /tmp/jadx.zip -d /tmp/jadx
+          chmod +x /tmp/jadx/bin/jadx
+          /tmp/jadx/bin/jadx             --no-res             --no-debug-info             --show-bad-code             --deobf             --threads-count 2             -d decompiled "$APK" >/tmp/jadx.log 2>&1 || true
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('decompiled/sources')
+          exact = [
+              Path('p000/vy8.java'),
+              Path('p000/a40.java'),
+              Path('p000/u30.java'),
+              Path('p000/ecd.java'),
+              Path('p000/ej0.java'),
+              Path('p000/gmi.java'),
+              Path('net/skyscanner/schemas/Commons.java'),
+              Path('net/skyscanner/identity/identityv2/data/dto/TokenResponseDto.java'),
+          ]
+          needles = [
+              'anonymous-auth-service/token',
+              'AnonymousAuthStateProvider',
+              'AnonymousIdentityTokens',
+              'AnonymousIdentitySharedPreferences',
+              'previous_utid',
+              'refresh_token',
+              'grant_type',
+              'TrustedAnonymousGlobalRollout',
+              'identityTrustedanonymousglobalrollout',
+              'IdentityConfiguration',
+          ]
+          long_literal = re.compile(r'(?<![A-Za-z0-9])[A-Za-z0-9_./+=:-]{72,}(?![A-Za-z0-9])')
+
+          def safe(line):
+              return long_literal.sub('<long-literal-redacted>', line)[:600]
+
+          def print_window(path, text, indexes, limit=40):
+              lines = text.splitlines()
+              seen = set()
+              emitted = 0
+              for index in indexes:
+                  start, end = max(0, index - 12), min(len(lines), index + 13)
+                  key = (start, end)
+                  if key in seen:
+                      continue
+                  seen.add(key)
+                  print(f'--- {path} LINES {start + 1}-{end} ---')
+                  for number in range(start, end):
+                      print(f'{number + 1}: {safe(lines[number])}')
+                  emitted += 1
+                  if emitted >= limit:
+                      break
+              return emitted
+
+          print('=== EXACT RELEVANT SOURCE FILES ===')
+          for relative in exact:
+              path = root / relative
+              if not path.exists():
+                  print('MISSING_FILE=', relative)
+                  continue
+              text = path.read_text(errors='replace')
+              indexes = [
+                  i for i, line in enumerate(text.splitlines())
+                  if any(needle.lower() in line.lower() for needle in needles)
+              ]
+              print(f'FILE={relative} BYTES={len(text)} NEEDLE_LINES={len(indexes)}')
+              print_window(relative, text, indexes)
+
+          print('=== CROSS REFERENCES TO ANONYMOUS TYPES AND ENDPOINT ===')
+          cross_needles = [
+              'AnonymousAuthStateProvider',
+              'AnonymousIdentityTokens',
+              'AnonymousIdentitySharedPreferences',
+              'anonymous-auth-service/token',
+              'getTrustedAnonymousGlobalRollout',
+              'getIdentityTrustedanonymousglobalrollout',
+          ]
+          cross = []
+          for path in root.rglob('*.java'):
+              try:
+                  text = path.read_text(errors='replace')
+              except OSError:
+                  continue
+              indexes = [
+                  i for i, line in enumerate(text.splitlines())
+                  if any(needle.lower() in line.lower() for needle in cross_needles)
+              ]
+              if indexes:
+                  cross.append((path, text, indexes))
+          print('CROSS_REFERENCE_FILES=', len(cross))
+          total_windows = 0
+          for path, text, indexes in cross[:80]:
+              total_windows += print_window(path.relative_to(root), text, indexes, limit=12)
+              if total_windows >= 180:
+                  break
+
+          print('=== METHOD SIGNATURES AROUND TOKEN BUILDERS ===')
+          signature_patterns = [
+              re.compile(r'FormBody\.Builder'),
+              re.compile(r'add\("client_id"'),
+              re.compile(r'add\("grant_type"'),
+              re.compile(r'add\("refresh_token"'),
+              re.compile(r'map\.put\("grant_type"'),
+              re.compile(r'map\.put\("refresh_token"'),
+          ]
+          signature_files = 0
+          for path in root.rglob('*.java'):
+              try:
+                  text = path.read_text(errors='replace')
+              except OSError:
+                  continue
+              indexes = [
+                  i for i, line in enumerate(text.splitlines())
+                  if any(pattern.search(line) for pattern in signature_patterns)
+              ]
+              if indexes:
+                  signature_files += 1
+                  print_window(path.relative_to(root), text, indexes, limit=16)
+          print('TOKEN_BUILDER_FILES=', signature_files)
+          print('V38_CALLGRAPH_STATIC_DONE=1')
+          PY
