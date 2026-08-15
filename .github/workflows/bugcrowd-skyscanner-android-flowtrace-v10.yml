@@ -1,0 +1,92 @@
+name: Bugcrowd Skyscanner Android Flow Trace V10
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-android-flowtrace-v10.yml'
+  workflow_dispatch:
+
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Acquire and decompile verified Skyscanner 7.204
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/jadx_out"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable -a net.skyscanner.android.main /output
+          unzip -q out/net.skyscanner.android.main.xapk -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n1)
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n1)
+          PKG=$("$AAPT" dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -n1)
+          VER=$("$AAPT" dump badging "$APK" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -n1)
+          CERT=$("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/^V3.0 Signer: certificate SHA-256 digest: //p' | head -n1)
+          test "$PKG" = 'net.skyscanner.android.main'
+          test "$VER" = '7.204'
+          test "$CERT" = 'd7940f8fc2a01fd9ae585538c293fe45eb0fe1ac538605788fe4f68ea580337a'
+          curl -sS -L --max-time 60 -o /tmp/jadx.zip 'https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip'
+          echo '545ea2be9c242511bc145755cf4bda2485ade42966e096f8b4d3da2a230e8974  /tmp/jadx.zip' | sha256sum -c -
+          unzip -q /tmp/jadx.zip -d /tmp/jadx
+          /tmp/jadx/bin/jadx --show-bad-code --no-debug-info --threads-count 4 -d jadx_out "$APK" >/tmp/jadx.log 2>&1 || true
+          echo "DECOMPILED_JAVA=$(find jadx_out/sources -type f -name '*.java' | wc -l)"
+
+      - name: Trace exported OAuth proxy into internal receivers
+        shell: bash
+        run: |
+          set -euo pipefail
+          S=jadx_out/sources
+          echo '=== SKYSCANNER OAUTH ROUTER ==='
+          sed -n '1,260p' "$S/net/skyscanner/identity/identityv2/socialsignin/OAuthRedirectRouterActivity.java"
+
+          echo '=== OKTA REDIRECT ACTIVITY ==='
+          F=$(find "$S" -type f -path '*com/okta/webauthenticationui/RedirectActivity.java' | head -n1 || true)
+          [ -n "$F" ] && sed -n '1,360p' "$F" || echo 'NOT_FOUND'
+
+          echo '=== APPAuth REDIRECT RECEIVER ==='
+          F=$(find "$S" -type f -path '*net/openid/appauth/RedirectUriReceiverActivity.java' | head -n1 || true)
+          [ -n "$F" ] && sed -n '1,360p' "$F" || echo 'NOT_FOUND'
+
+          echo '=== AUTHORIZATION MANAGEMENT / STATE REFERENCES ==='
+          grep -R -n -i -E 'class AuthorizationManagementActivity|state mismatch|state.*match|authorization.*state|code_verifier|codeVerifier|PKCE|RedirectUriReceiverActivity|RedirectActivity' \
+            "$S/net/openid" "$S/com/okta" "$S/net/skyscanner/identity" 2>/dev/null | head -n 1000 || true
+
+          echo '=== OAUTH REDIRECT URI CALLERS / CONFIG ==='
+          grep -R -n -i -E 'oauth/redirect|mobile\.ds\.skyscanner\.net|www\.skyscanner\.net.*oauth|redirectUri|redirect_uri' \
+            "$S/net/skyscanner" 2>/dev/null | head -n 1200 || true
+
+      - name: Trace deep link into internal navigation and WebViews
+        shell: bash
+        run: |
+          set -euo pipefail
+          S=jadx_out/sources
+          echo '=== SPLASH ACTIVITY FULL ==='
+          sed -n '1,700p' "$S/net/skyscanner/shell/ui/activity/SplashActivity.java"
+
+          echo '=== DEEPLINK URI READERS ==='
+          grep -R -n -i -E 'getData\(\)|getDataString\(\)|getQueryParameter\(|getIntent\(\).*data|ACTION_VIEW|skyscanner://' \
+            "$S/net/skyscanner" 2>/dev/null | head -n 1500 || true
+
+          echo '=== PARTNER WEBVIEW NAV PARAM REFERENCES ==='
+          grep -R -n -E 'PartnerWebViewNavigationParam|KEY_NAVIGATION_PARAM|PartnerWebViewActivity|PartnerWebViewComposeActivity' \
+            "$S/net/skyscanner" "$S/defpackage" 2>/dev/null | head -n 1500 || true
+
+          echo '=== WEBVIEW CLIENT mxd ==='
+          F=$(find "$S/defpackage" -type f -name 'mxd.java' | head -n1 || true)
+          [ -n "$F" ] && sed -n '1,500p' "$F" || echo 'NOT_FOUND'
+
+          echo '=== WEBVIEW VIEWMODEL xxd ==='
+          F=$(find "$S/defpackage" -type f -name 'xxd.java' | head -n1 || true)
+          [ -n "$F" ] && sed -n '1,700p' "$F" || echo 'NOT_FOUND'
+
+          echo '=== CUSTOM TAB HANDLER o84 ==='
+          F=$(find "$S/defpackage" -type f -name 'o84.java' | head -n1 || true)
+          [ -n "$F" ] && sed -n '1,500p' "$F" || echo 'NOT_FOUND'
+
+          echo '=== FILE PROVIDER / URI GRANT USE ==='
+          grep -R -n -i -E 'FileProvider|getUriForFile|grantUriPermission|FLAG_GRANT_READ_URI_PERMISSION|FLAG_GRANT_WRITE_URI_PERMISSION|ClipData' \
+            "$S/net/skyscanner" "$S/defpackage" 2>/dev/null | head -n 1200 || true
+
+          echo 'V10_FLOWTRACE_DONE=1'
