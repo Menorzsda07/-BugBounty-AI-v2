@@ -1,0 +1,110 @@
+name: Bugcrowd Skyscanner Android Decompile V8
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-android-decompile-v8.yml'
+  workflow_dispatch:
+
+jobs:
+  decompile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Acquire verified Skyscanner 7.204 base APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/jadx_out"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable \
+            -a net.skyscanner.android.main /output
+          unzip -q out/net.skyscanner.android.main.xapk -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          test -f "$APK"
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n1)
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n1)
+          PKG=$("$AAPT" dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -n1)
+          VER=$("$AAPT" dump badging "$APK" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -n1)
+          CERT=$("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/^V3.0 Signer: certificate SHA-256 digest: //p' | head -n1)
+          echo "PACKAGE=$PKG VERSION=$VER CERT_SHA256=$CERT"
+          test "$PKG" = 'net.skyscanner.android.main'
+          test "$VER" = '7.204'
+          test "$CERT" = 'd7940f8fc2a01fd9ae585538c293fe45eb0fe1ac538605788fe4f68ea580337a'
+
+      - name: Install verified JADX 1.5.6
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sS -L --max-time 60 \
+            -o /tmp/jadx.zip \
+            'https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip'
+          echo '545ea2be9c242511bc145755cf4bda2485ade42966e096f8b4d3da2a230e8974  /tmp/jadx.zip' | sha256sum -c -
+          unzip -q /tmp/jadx.zip -d /tmp/jadx
+          /tmp/jadx/bin/jadx --version
+
+      - name: Decompile targeted app code
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK='unpacked/net.skyscanner.android.main.apk'
+          /tmp/jadx/bin/jadx \
+            --show-bad-code \
+            --no-debug-info \
+            --threads-count 4 \
+            -d jadx_out "$APK" >/tmp/jadx.log 2>&1 || true
+          echo '=== JADX SUMMARY ==='
+          tail -n 30 /tmp/jadx.log || true
+          echo "JAVA_FILES=$(find jadx_out/sources -type f -name '*.java' | wc -l)"
+
+          echo '=== TARGET CLASS FILES ==='
+          for needle in \
+            'OAuthRedirectRouterActivity' \
+            'SplashActivity' \
+            'PartnerWebViewActivity' \
+            'PartnerWebViewComposeActivity' \
+            'WebArticleActivity' \
+            'LinkShareBroadcastReceiver'; do
+            echo "--- $needle ---"
+            find jadx_out/sources -type f -name "*$needle*.java" -print || true
+          done
+
+          echo '=== OAUTH ROUTER SOURCE ==='
+          F=$(find jadx_out/sources -type f -name 'OAuthRedirectRouterActivity.java' | head -n1 || true)
+          if [ -n "$F" ]; then sed -n '1,320p' "$F"; fi
+
+          echo '=== SPLASH SECURITY-RELEVANT REFERENCES ==='
+          F=$(find jadx_out/sources -type f -name 'SplashActivity.java' | head -n1 || true)
+          if [ -n "$F" ]; then
+            grep -n -E -B8 -A30 'getIntent|getData|Uri|deep|route|redirect|scheme|host|query|oauth|http|javascript|WebView|startActivity' "$F" | head -n 700 || true
+          fi
+
+          echo '=== WEBVIEW CLASS SOURCES ==='
+          for n in PartnerWebViewActivity PartnerWebViewComposeActivity WebArticleActivity; do
+            F=$(find jadx_out/sources -type f -name "$n.java" | head -n1 || true)
+            [ -n "$F" ] || continue
+            echo "--- $F ---"
+            sed -n '1,360p' "$F" | head -n 360
+          done
+
+          echo '=== OAUTH / PKCE REFERENCES AROUND SKYSCANNER IDENTITY ==='
+          rg -n -i \
+            -g '*.java' \
+            'oauth/redirect|OAuthRedirect|code_verifier|codeVerifier|code_challenge|codeChallenge|PKCE|state\b|authorizationCode|redirectUri' \
+            jadx_out/sources/net/skyscanner 2>/dev/null \
+            | head -n 900 || true
+
+          echo '=== WEBVIEW DANGEROUS API REFERENCES ==='
+          rg -n \
+            -g '*.java' \
+            'addJavascriptInterface|setJavaScriptEnabled|setAllowFileAccess|setAllowContentAccess|setAllowUniversalAccessFromFileURLs|setAllowFileAccessFromFileURLs|shouldOverrideUrlLoading|loadUrl\(|evaluateJavascript|setWebViewClient' \
+            jadx_out/sources/net/skyscanner 2>/dev/null \
+            | head -n 1000 || true
+
+          echo '=== EXTERNAL INTENT / URI REFERENCES ==='
+          rg -n -i \
+            -g '*.java' \
+            'getQueryParameter|getData\(\)|getDataString|Intent\.parseUri|ACTION_VIEW|setData\(|Uri\.parse|scheme\(|host\(|javascript:|file:|content:|intent:' \
+            jadx_out/sources/net/skyscanner 2>/dev/null \
+            | head -n 1200 || true
+
+          echo 'V8_DECOMPILE_DONE=1'
