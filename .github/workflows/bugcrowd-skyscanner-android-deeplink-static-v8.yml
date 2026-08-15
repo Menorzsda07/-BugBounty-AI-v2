@@ -1,0 +1,78 @@
+name: Bugcrowd Skyscanner Android Deeplink Static V8
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-android-deeplink-static-v8.yml'
+  workflow_dispatch:
+
+jobs:
+  deeplink-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Decompile official-signed Skyscanner Android APK and inspect deeplink/OAuth routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/jadx" "$PWD/decompiled"
+
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable \
+            -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          test -f "$APK"
+
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n1)
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n1)
+          "$APKSIGNER" verify --print-certs "$APK" | sed -n '1,20p'
+          "$AAPT" dump badging "$APK" | sed -n '1,8p'
+
+          echo '=== NETWORK SECURITY CONFIG RESOURCE ==='
+          "$AAPT" dump resources "$APK" | grep -A8 -B3 '0x7f18000b' || true
+
+          echo '=== INSTALL JADX 1.5.5 ==='
+          curl -fsSL --retry 2 --max-time 60 \
+            -o /tmp/jadx.zip \
+            'https://github.com/skylot/jadx/releases/download/v1.5.5/jadx-1.5.5.zip'
+          unzip -q /tmp/jadx.zip -d jadx
+          chmod +x jadx/bin/jadx
+          jadx/bin/jadx --version
+
+          echo '=== DECOMPILE SOURCES ONLY ==='
+          jadx/bin/jadx --no-res --threads-count 2 -d decompiled "$APK" >/tmp/jadx.log 2>&1 || true
+          tail -n 30 /tmp/jadx.log || true
+
+          echo '=== TARGET CLASSES ==='
+          find decompiled/sources -type f 2>/dev/null \
+            | grep -Ei '(OAuthRedirectRouterActivity|SplashActivity|PartnerWebView(Activity|ComposeActivity)|DeepLink|Deeplink|UrlRouter|UriRouter|LoginFlowActivity)' \
+            | head -n 120 || true
+
+          echo '=== OAUTH REDIRECT ROUTER SOURCE ==='
+          OAUTH=$(find decompiled/sources -type f -name '*OAuthRedirectRouterActivity*' | head -n1 || true)
+          if [ -n "$OAUTH" ]; then sed -n '1,320p' "$OAUTH"; fi
+
+          echo '=== SPLASH ACTIVITY SOURCE ==='
+          SPLASH=$(find decompiled/sources -type f -name '*SplashActivity*' | head -n1 || true)
+          if [ -n "$SPLASH" ]; then sed -n '1,360p' "$SPLASH"; fi
+
+          echo '=== PARTNER WEBVIEW SOURCES ==='
+          for f in $(find decompiled/sources -type f \( -name '*PartnerWebViewActivity*' -o -name '*PartnerWebViewComposeActivity*' \) | head -n10); do
+            echo "--- $f ---"
+            sed -n '1,320p' "$f"
+          done
+
+          echo '=== SECURITY-RELEVANT ROUTING REFERENCES ==='
+          grep -RInE --include='*.java' \
+            '(getIntent\(\).*getData|getData\(\)|getDataString\(\)|Intent\.ACTION_VIEW|oauth/redirect|OAuthRedirect|code_verifier|codeVerifier|stateParam|oauth.*state|deeplink|deepLink|DeepLink|loadUrl\(|addJavascriptInterface|setJavaScriptEnabled|shouldOverrideUrlLoading|WebViewClient|openExternal|Uri\.parse)' \
+            decompiled/sources 2>/dev/null \
+            | grep -Ei 'skyscanner|identity|oauth|login|shell|navigation|webview|deeplink|redirect' \
+            | head -n 900 || true
+
+          echo '=== CUSTOM SCHEME REFERENCES ==='
+          grep -RInE --include='*.java' \
+            '("skyscanner"|skyscanner://|mobile\.ds\.skyscanner\.net|/oauth/redirect|skyscanner\.app\.link)' \
+            decompiled/sources 2>/dev/null | head -n 500 || true
+
+          echo 'V8_DEEPLINK_STATIC_DONE=1'
