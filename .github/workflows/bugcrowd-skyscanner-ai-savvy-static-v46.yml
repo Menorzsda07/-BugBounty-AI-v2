@@ -1,0 +1,205 @@
+name: Bugcrowd Skyscanner AI Savvy Static Mapper V46
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-ai-savvy-static-v46.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ai-savvy-static-mapper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Map AI and Savvy recommendation feature in the official Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'SCOPE_CHECK_DATE=2026-08-15'
+          echo 'STATIC_ANALYSIS_ONLY=1'
+          echo 'LIVE_SKYSCANNER_REQUESTS=0'
+          echo 'TARGET=Skyscanner Android app AI Bias Testing'
+
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/jadx" "$PWD/decompiled"
+
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable \
+            -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          test -n "$FILE"
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          test -f "$APK"
+          echo "APK_SHA256=$(sha256sum "$APK" | cut -d' ' -f1)"
+
+          curl -fsSL --retry 2 --max-time 60 -o /tmp/jadx.zip \
+            'https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip'
+          unzip -q /tmp/jadx.zip -d jadx
+          chmod +x jadx/bin/jadx
+
+          set +e
+          jadx/bin/jadx \
+            --no-debug-info \
+            --show-bad-code \
+            --deobf \
+            --threads-count 2 \
+            -d decompiled "$APK" >/tmp/jadx.log 2>&1
+          rc=$?
+          set -e
+          echo "JADX_RC=$rc"
+          tail -n 25 /tmp/jadx.log || true
+
+          python3 - <<'PY'
+          from pathlib import Path
+          from urllib.parse import urlsplit
+          import re
+
+          root = Path("decompiled")
+          source_root = root / "sources"
+          resource_root = root / "resources"
+
+          weighted = [
+              ("savvy", re.compile(r"savvy", re.I), 30),
+              ("openai", re.compile(r"\bopenai\b", re.I), 24),
+              ("ai_search", re.compile(r"\bai[_ /-]?search\b", re.I), 22),
+              ("prompt", re.compile(r"\bprompt(?:s|ing|[_ /-](?:text|query|template|injection))?\b", re.I), 12),
+              ("generative", re.compile(r"\bgenerative\b", re.I), 10),
+              ("large_language_model", re.compile(r"\blarge language model\b|\bllm\b", re.I), 10),
+              ("recommendation", re.compile(r"\brecommend(?:ation|ations|ed|ing)?\b", re.I), 5),
+              ("destination", re.compile(r"\bdestination(?:s)?\b", re.I), 3),
+              ("conversation", re.compile(r"\bconversation(?:al|s)?\b", re.I), 5),
+              ("chat", re.compile(r"\bchat(?:bot|s)?\b", re.I), 4),
+              ("inspiration", re.compile(r"\binspiration\b", re.I), 3),
+              ("english_market", re.compile(r"english[_ -]?(?:speaking|market)", re.I), 7),
+          ]
+
+          allowed_suffixes = {".java", ".xml", ".json", ".txt", ".properties", ".html"}
+          candidates = []
+
+          for base in (source_root, resource_root):
+              if not base.exists():
+                  continue
+              for path in base.rglob("*"):
+                  if not path.is_file() or path.suffix.lower() not in allowed_suffixes:
+                      continue
+                  rel = path.relative_to(root).as_posix()
+                  if base == source_root:
+                      source_rel = path.relative_to(source_root).as_posix()
+                      if not (
+                          source_rel.startswith("net/skyscanner/")
+                          or source_rel.startswith("com/skyscanner/")
+                          or source_rel.startswith("p000/")
+                      ):
+                          continue
+                  try:
+                      text = path.read_text(errors="replace")
+                  except OSError:
+                      continue
+                  hits = {}
+                  score = 0
+                  for label, rx, weight in weighted:
+                      count = len(rx.findall(text))
+                      if count:
+                          hits[label] = count
+                          score += min(count, 12) * weight
+                  strong = any(label in hits for label in ("savvy", "openai", "ai_search"))
+                  paired = (
+                      "prompt" in hits
+                      and ("recommendation" in hits or "destination" in hits)
+                  ) or (
+                      "generative" in hits
+                      and ("recommendation" in hits or "destination" in hits)
+                  )
+                  if strong or paired:
+                      candidates.append((score, rel, hits, text))
+
+          candidates.sort(key=lambda item: (-item[0], item[1]))
+          print(f"V46_CANDIDATE_FILES={len(candidates)}")
+          print("V46_TOP_INDEX=")
+          for score, rel, hits, _ in candidates[:120]:
+              print(f"INDEX score={score} file={rel} hits={hits}")
+
+          long_literal = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9_+/=.-]{48,}(?![A-Za-z0-9])")
+          sensitive_pair = re.compile(
+              r"(?i)((?:api[_-]?key|authorization|client[_-]?secret|access[_-]?token|refresh[_-]?token)"
+              r"\s*[:=]\s*[\"']?)[^\"'\s,;}]+"
+          )
+          raw_url = re.compile(r"https?://[^\s\"'<>]+")
+          retrofit = re.compile(r"@(GET|POST|PUT|PATCH|DELETE)\(\s*[\"']([^\"']+)[\"']\s*\)")
+          graphql = re.compile(
+              r"(?i)(?:operationName|operation_name|queryName|mutationName)\s*[:=(]\s*[\"']([A-Za-z0-9_]{2,100})"
+          )
+
+          def sanitize_line(line):
+              line = sensitive_pair.sub(r"\1<redacted>", line)
+              line = long_literal.sub("<long-literal-redacted>", line)
+              line = raw_url.sub(lambda m: sanitize_url(m.group(0)), line)
+              return line[:800]
+
+          def sanitize_url(value):
+              try:
+                  u = urlsplit(value.rstrip(").,;"))
+                  path = u.path[:260]
+                  return f"{u.scheme}://{u.netloc}{path}"
+              except Exception:
+                  return "<url-redacted>"
+
+          urls = set()
+          methods = set()
+          operations = set()
+          emitted = 0
+
+          print("V46_RELEVANT_WINDOWS=")
+          for score, rel, hits, text in candidates[:100]:
+              for match in raw_url.finditer(text):
+                  clean = sanitize_url(match.group(0))
+                  if clean:
+                      urls.add((rel, clean))
+              for method, path in retrofit.findall(text):
+                  methods.add((rel, method.upper(), path.split("?")[0][:260]))
+              for operation in graphql.findall(text):
+                  operations.add((rel, operation))
+
+              lines = text.splitlines()
+              indexes = []
+              for i, line in enumerate(lines):
+                  if any(rx.search(line) for _, rx, _ in weighted):
+                      indexes.append(i)
+              shown = set()
+              print(f"FILE={rel} SCORE={score} HITS={hits} MATCH_LINES={len(indexes)}")
+              for i in indexes:
+                  for j in range(max(0, i - 2), min(len(lines), i + 3)):
+                      if j in shown:
+                          continue
+                      shown.add(j)
+                      print(f"{j + 1}: {sanitize_line(lines[j])}")
+                      emitted += 1
+                      if emitted >= 1100:
+                          break
+                  if emitted >= 1100:
+                      break
+              if emitted >= 1100:
+                  break
+
+          print(f"V46_SNIPPET_LINES={emitted}")
+          print(f"V46_SANITIZED_URL_COUNT={len(urls)}")
+          for rel, value in sorted(urls)[:180]:
+              print(f"URL file={rel} value={value}")
+
+          print(f"V46_RETROFIT_METHOD_COUNT={len(methods)}")
+          for rel, method, path in sorted(methods)[:180]:
+              print(f"HTTP file={rel} method={method} path={path}")
+
+          print(f"V46_GRAPHQL_OPERATION_COUNT={len(operations)}")
+          for rel, operation in sorted(operations)[:180]:
+              print(f"GRAPHQL file={rel} operation={operation}")
+
+          strong_files = sum(
+              1 for _, _, hits, _ in candidates
+              if any(k in hits for k in ("savvy", "openai", "ai_search"))
+          )
+          print(f"V46_STRONG_FEATURE_FILES={strong_files}")
+          print("V46_AI_SAVVY_STATIC_DONE=1")
+          PY
