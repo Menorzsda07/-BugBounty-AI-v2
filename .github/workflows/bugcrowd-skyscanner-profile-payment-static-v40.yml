@@ -1,0 +1,116 @@
+name: Bugcrowd Skyscanner Profile Payment Static V40
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-profile-payment-static-v40.yml'
+  workflow_dispatch:
+
+jobs:
+  profile-payment-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 24
+    steps:
+      - name: Map profile and payment-token contracts in the official Android client
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'STATIC_ANALYSIS_ONLY=1'
+          echo 'LIVE_SKYSCANNER_REQUESTS=0'
+          mkdir -p "$PWD/out" "$PWD/unpacked" "$PWD/jadx" "$PWD/src"
+
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable             -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          test -n "$FILE"
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          test -f "$APK"
+          echo "APK_SHA256=$(sha256sum "$APK" | cut -d' ' -f1)"
+
+          curl -fsSL --retry 2 --max-time 60 -o /tmp/jadx.zip             'https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip'
+          unzip -q /tmp/jadx.zip -d jadx
+          chmod +x jadx/bin/jadx
+
+          set +e
+          jadx/bin/jadx --no-res --threads-count 2 -d src "$APK" >/tmp/jadx.log 2>&1
+          rc=$?
+          set -e
+          echo "JADX_RC=$rc"
+          tail -n 30 /tmp/jadx.log || true
+
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+
+          roots = [Path("src/sources")]
+          needles = [
+              r"/profile/",
+              r"apps-profile",
+              r"profile/user",
+              r"payment[_ -]?method",
+              r"payment[_ -]?token",
+              r"card[_ -]?token",
+              r"tokeni[sz]ed[_ -]?card",
+              r"stored[_ -]?card",
+              r"saved[_ -]?card",
+              r"credit[_ -]?card",
+              r"payment[_ -]?details",
+              r"billing[_ -]?address",
+              r"card[_ -]?details",
+              r"paymentinstrument",
+              r"payment[_ -]?instrument",
+              r"cardholder",
+          ]
+          regexes = [(n, re.compile(n, re.I)) for n in needles]
+          candidates = []
+
+          for root in roots:
+              if not root.exists():
+                  continue
+              for path in root.rglob("*.java"):
+                  rel = path.relative_to(root).as_posix()
+                  if not (rel.startswith("net/skyscanner/") or rel.startswith("p000/") or rel.startswith("com/skyscanner/")):
+                      continue
+                  try:
+                      text = path.read_text(errors="replace")
+                  except Exception:
+                      continue
+                  matched = [name for name, rx in regexes if rx.search(text)]
+                  if matched:
+                      score = sum(len(rx.findall(text)) for _, rx in regexes)
+                      candidates.append((score, rel, matched, text))
+
+          candidates.sort(key=lambda x: (-x[0], x[1]))
+          print("V40_MATCHED_FILES=", len(candidates))
+          print("V40_TOP_FILES=", [(score, rel, matched) for score, rel, matched, _ in candidates[:80]])
+
+          long_literal = re.compile(r'(["\x27])[A-Za-z0-9._~+/=-]{48,}\1')
+          url_query = re.compile(r'(https?://[^\s"\x27?]+)\?[^\s"\x27]+')
+          emitted = 0
+          for score, rel, matched, text in candidates[:80]:
+              lines = text.splitlines()
+              indexes = []
+              for i, line in enumerate(lines):
+                  if any(rx.search(line) for _, rx in regexes):
+                      indexes.append(i)
+              print(f"FILE={rel} SCORE={score} TERMS={matched} MATCH_LINES={len(indexes)}")
+              shown = set()
+              for i in indexes:
+                  for j in range(max(0, i-2), min(len(lines), i+3)):
+                      if j in shown:
+                          continue
+                      shown.add(j)
+                      line = long_literal.sub(r'\1<long-literal-redacted>\1', lines[j])
+                      line = url_query.sub(r'\1?<query-redacted>', line)
+                      print(f"{j+1}: {line[:700]}")
+                      emitted += 1
+                      if emitted >= 900:
+                          break
+                  if emitted >= 900:
+                      break
+              if emitted >= 900:
+                  break
+
+          print("V40_SNIPPET_LINES=", emitted)
+          print("V40_PROFILE_PAYMENT_STATIC_DONE=1")
+          PY
