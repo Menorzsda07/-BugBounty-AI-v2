@@ -1,0 +1,46 @@
+name: Bugcrowd Skyscanner Gateway Endpoint Recon V18
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bugcrowd-skyscanner-gateway-endpoint-recon-v18.yml'
+  workflow_dispatch:
+
+jobs:
+  endpoint-recon:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Extract gateway and API route strings from official APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/out" "$PWD/unpacked"
+          docker run --rm -v "$PWD/out:/output" ghcr.io/efforg/apkeep:stable \
+            -a net.skyscanner.android.main /output
+          FILE=$(find out -maxdepth 1 -type f | head -n1)
+          unzip -q "$FILE" -d unpacked
+          APK='unpacked/net.skyscanner.android.main.apk'
+          test -f "$APK"
+          mkdir -p /tmp/apkraw
+          unzip -q "$APK" -d /tmp/apkraw
+
+          echo '=== HOST STRINGS ==='
+          for f in /tmp/apkraw/classes*.dex; do
+            strings -n 5 "$f"
+          done | grep -Eio '([A-Za-z0-9._-]+\.)*skyscanner\.net[^[:space:]"<>]*' \
+            | sort -u | head -n 500 || true
+
+          echo '=== GATEWAY / SERVICE PATH STRINGS ==='
+          for f in /tmp/apkraw/classes*.dex; do
+            strings -n 4 "$f"
+          done | grep -Ei '(gateway\.skyscanner\.net|gateway/|service-v[0-9]|/api/v[0-9]|graphql|price.?alert|saved|wishlist|favourite|favorite|identity|profile|traveller|account|subscription|travel.?insight|report|deeplink|redirect)' \
+            | grep -E '(/|https|gateway|service|api|graphql)' \
+            | sort -u | head -n 1400 || true
+
+          echo '=== RESOURCE URL STRINGS ==='
+          unzip -p "$APK" resources.arsc 2>/dev/null | strings -n 5 \
+            | grep -Ei '(skyscanner\.net|gateway|/api/|graphql|price.?alert|saved|identity|profile|account|subscription)' \
+            | sort -u | head -n 700 || true
+
+          echo 'V18_GATEWAY_RECON_DONE=1'
