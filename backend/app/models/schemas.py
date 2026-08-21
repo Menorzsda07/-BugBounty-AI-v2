@@ -55,6 +55,7 @@ class Investigation(BaseModel):
     progress: int = Field(ge=0, le=100)
     current_step: str
     plan: list[TestFamily]
+    layered_workflow: list[dict] = []
     findings: list[Finding] = []
     timeline: list[str] = []
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())

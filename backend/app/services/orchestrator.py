@@ -4,6 +4,7 @@ from app.models.schemas import ChatResponse, Investigation, Finding
 from app.services.catalog import CATALOG, BLOCKED
 from app.services.scope_guard import scope_guard
 from app.services.evidence import evidence_store
+from app.services.review_workflow import layered_plan
 
 TARGET_RE = re.compile(r"(?:https?://)?(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:/[^\s]*)?")
 
@@ -51,7 +52,18 @@ class Orchestrator:
             remediation=["Revisar CSP, frame-ancestors, Referrer-Policy e Permissions-Policy.", "Validar compatibilidade antes da implantação."],
             evidence=evidence,
         )
-        investigation = Investigation(id=inv_id, conversation_id=cid, target=target, status="completed", progress=100, current_step="Demonstração concluída", plan=CATALOG, findings=[finding], timeline=timeline)
+        investigation = Investigation(
+            id=inv_id,
+            conversation_id=cid,
+            target=target,
+            status="completed",
+            progress=100,
+            current_step="Demonstração concluída",
+            plan=CATALOG,
+            layered_workflow=layered_plan(f.id for f in CATALOG if f.enabled),
+            findings=[finding],
+            timeline=timeline,
+        )
         self.investigations[inv_id] = investigation
 
         reply = (
